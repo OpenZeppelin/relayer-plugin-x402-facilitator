@@ -52,6 +52,7 @@ export { handler } from "@openzeppelin/relayer-plugin-x402-facilitator";
       "emit_logs": false,
       "emit_traces": false,
       "raw_response": true,
+      "allow_get_invocation": true,
       "timeout": 30,
       "config": {
         "networks": [
