@@ -1,0 +1,65 @@
+{
+  "name": "@openzeppelin/relayer-plugin-x402-facilitator",
+  "version": "0.5.0",
+  "description": "OpenZeppelin Relayer Plugin for X402 Facilitator",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "package.json"
+  ],
+  "scripts": {
+    "dev": "tsc --watch",
+    "build": "tsc",
+    "prebuild": "pnpm clean",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "style": "pnpm format && pnpm lint:fix",
+    "style:check": "pnpm format:check && pnpm lint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist",
+    "install-deps": "pnpm install --frozen-lockfile --ignore-scripts --prefer-offline",
+    "install-pnpm": "npm install -g pnpm",
+    "ci:version": "pnpm changeset version",
+    "release": "node ./scripts/release.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OpenZeppelin/relayer-plugin-x402-facilitator.git"
+  },
+  "author": "OpenZeppelin <contact@openzeppelin.com>",
+  "license": "AGPL-3.0",
+  "dependencies": {
+    "@actions/exec": "^1.1.1",
+    "@openzeppelin/relayer-sdk": "^1.8.0",
+    "@stellar/stellar-sdk": "^14.4.2"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.8",
+    "@types/node": "^22.19.1",
+    "@typescript-eslint/eslint-plugin": "^8.48.1",
+    "@typescript-eslint/parser": "^8.48.1",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^9.1.2",
+    "eslint-plugin-prettier": "^5.5.4",
+    "prettier": "^3.7.4",
+    "typescript": "5.8.3",
+    "typescript-eslint": "8.27.0",
+    "vitest": "^4.0.15"
+  },
+  "engines": {
+    "node": ">=22.18.0",
+    "npm": "use pnpm",
+    "pnpm": ">=9",
+    "yarn": "use pnpm"
+  },
+  "packageManager": "pnpm@10.14.0"
+}

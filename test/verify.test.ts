@@ -1,0 +1,363 @@
+import * as utils from "../src/stellar/utils";
+
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  buildInvokeTxBase64,
+  buildPaymentPayload,
+  buildPaymentRequirements,
+} from "./helpers/payload";
+
+import { verify } from "../src/stellar/verify";
+
+vi.mock("@stellar/stellar-sdk", () => {
+  class Transaction {
+    operations: any[];
+    signatures: any[];
+    source: string | undefined;
+
+    constructor(base64: string, _networkPassphrase?: string) {
+      const raw = JSON.parse(Buffer.from(base64, "base64").toString("utf8"));
+
+      // Check if this is a test transaction
+      if (raw.__testTransaction && (global as any).__testTxData) {
+        const txData = (global as any).__testTxData;
+        this.operations = txData.operations;
+        this.signatures = txData.signatures;
+        this.source = txData.source;
+      } else {
+        // Fallback for non-test transactions
+        this.operations = raw.operations ?? [];
+        this.signatures = raw.signatures ?? [];
+        this.source = raw.source;
+      }
+    }
+  }
+
+  const Address = {
+    fromScAddress: (addr: any) => ({
+      toString: () => (typeof addr === "string" ? addr : String(addr)),
+    }),
+    fromScVal: (val: any) => ({
+      toString: () =>
+        typeof val.value === "string" ? val.value : String(val.value),
+    }),
+  };
+
+  const scValToNative = (val: any) => {
+    const v =
+      val && typeof val === "object" && "value" in val
+        ? (val as any).value
+        : val;
+    if (typeof v === "number") return BigInt(v);
+    if (typeof v === "string" && /^\d+$/.test(v)) return BigInt(v);
+    return v;
+  };
+
+  const rpc = { Api: { isSimulationError: () => false } };
+
+  return { Address, Transaction, scValToNative, rpc, Operation: {}, xdr: {} };
+});
+
+const networkConfig = {
+  network: "stellar-testnet",
+  type: "stellar" as const,
+  relayer_id: "relayer-1",
+  assets: ["ASSET_CONTRACT"],
+};
+
+const makeApi = (overrides: Partial<any> = {}) =>
+  ({
+    useRelayer: vi.fn().mockReturnValue({
+      getRelayer: vi
+        .fn()
+        .mockResolvedValue({ network: "testnet", address: "RELAYER_ADDR" }),
+      rpc: vi.fn().mockResolvedValue({ result: {} }),
+      ...overrides,
+    }),
+  }) as any;
+
+describe("stellar verify", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("rejects unsupported asset", async () => {
+    const tx = buildInvokeTxBase64();
+    const reqs = buildPaymentRequirements({ asset: "OTHER_ASSET" });
+    const payload = buildPaymentPayload(tx);
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      makeApi(),
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe("unsupported_asset");
+  });
+
+  test("rejects when relayer network mismatches config", async () => {
+    const tx = buildInvokeTxBase64();
+    const api = makeApi({
+      getRelayer: vi
+        .fn()
+        .mockResolvedValue({ network: "mainnet", address: "RELAYER_ADDR" }),
+    });
+    const payload = buildPaymentPayload(tx);
+    const reqs = buildPaymentRequirements();
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe("verify_network_mismatch");
+  });
+
+  test("validates success path and returns payer", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+    });
+    const payload = buildPaymentPayload(tx);
+    const reqs = buildPaymentRequirements({
+      payTo: "G-PAYEE",
+      maxAmountRequired: "150",
+    });
+
+    const api = makeApi();
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(true);
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("rejects invalid x402 version", async () => {
+    const tx = buildInvokeTxBase64();
+    const payload = { ...buildPaymentPayload(tx), x402Version: 2 };
+    const reqs = buildPaymentRequirements();
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      makeApi(),
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe("invalid_x402_version");
+  });
+
+  test("rejects invalid scheme", async () => {
+    const tx = buildInvokeTxBase64();
+    const payload = { ...buildPaymentPayload(tx), scheme: "invalid" };
+    const reqs = buildPaymentRequirements();
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      makeApi(),
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe("invalid_scheme");
+  });
+
+  test("rejects network mismatch between payload and requirements", async () => {
+    const tx = buildInvokeTxBase64();
+    const payload = buildPaymentPayload(tx, { network: "stellar-mainnet" });
+    const reqs = buildPaymentRequirements({ network: "stellar-testnet" });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      makeApi(),
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe("invalid_network");
+  });
+
+  test("rejects wrong recipient address", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-WRONG",
+      amount: 200n,
+    });
+    const payload = buildPaymentPayload(tx);
+    const reqs = buildPaymentRequirements({
+      payTo: "G-PAYEE",
+      maxAmountRequired: "150",
+    });
+
+    const api = makeApi();
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_wrong_recipient",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("rejects insufficient payment amount", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 100n,
+    });
+    const payload = buildPaymentPayload(tx);
+    const reqs = buildPaymentRequirements({
+      payTo: "G-PAYEE",
+      maxAmountRequired: "150",
+    });
+
+    const api = makeApi();
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_wrong_amount",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("rejects transaction with envelope signatures", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+      signatures: [{ signature: "SIG" }],
+    });
+    const payload = buildPaymentPayload(tx);
+    const reqs = buildPaymentRequirements({
+      payTo: "G-PAYEE",
+      maxAmountRequired: "150",
+    });
+
+    const api = makeApi();
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_has_envelope_signatures",
+    );
+  });
+
+  test("rejects transaction with unsigned auth entries", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+    });
+    const payload = buildPaymentPayload(tx);
+    const reqs = buildPaymentRequirements({
+      payTo: "G-PAYEE",
+      maxAmountRequired: "150",
+    });
+
+    const api = makeApi();
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: [],
+      unsignedAddresses: ["G-PAYER"],
+    });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    // The error is "missing_payer_auth" because no signed addresses means payer didn't sign
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_missing_payer_auth",
+    );
+  });
+
+  test("rejects wrong contract address", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+      asset: "WRONG_CONTRACT",
+    });
+    const payload = buildPaymentPayload(tx);
+    const reqs = buildPaymentRequirements({
+      payTo: "G-PAYEE",
+      maxAmountRequired: "150",
+    });
+
+    const api = makeApi();
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_wrong_asset",
+    );
+  });
+
+  test("rejects wrong function name", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+      funcOverrides: {
+        functionName: () => Buffer.from("approve"),
+      },
+    });
+    const payload = buildPaymentPayload(tx);
+    const reqs = buildPaymentRequirements({
+      payTo: "G-PAYEE",
+      maxAmountRequired: "150",
+    });
+
+    const api = makeApi();
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_wrong_function_name",
+    );
+  });
+});

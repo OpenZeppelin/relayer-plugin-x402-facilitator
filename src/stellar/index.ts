@@ -1,0 +1,12 @@
+/**
+ * Stellar plugin
+ *
+ * This plugin implements the Stellar payment processing.
+ *
+ * Example API calls:
+ * - POST /api/v1/plugins/{plugin_id}/call/verify   -> Verify endpoint (route = "/verify")
+ * - POST /api/v1/plugins/{plugin_id}/call/settle   -> Settle endpoint (route = "/settle")
+ * - POST /api/v1/plugins/{plugin_id}/call/supported   -> Supported endpoint (route = "/supported")
+ */
+export * from "./verify";
+export * from "./settle";
