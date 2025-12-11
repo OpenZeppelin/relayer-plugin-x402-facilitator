@@ -94,11 +94,11 @@ All routes hang off the Relayer plugin call endpoint: `POST /api/v1/plugins/{plu
 Point the facilitator to your Relayer plugin URL and pass the Relayer API key via `createAuthHeaders`.
 
 ```ts
-import { paymentMiddleware } from "@coinbase/x402-express";
+import { paymentMiddleware } from "x402-express";
 
 const facilitatorUrl = "https://your-relayer-host/api/v1/plugins/x402/call";
 const network = "stellar-testnet";
-const payTo = "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"; // example asset/account
+const payTo = "G..."; // Payment receiver G address
 
 app.use(
   paymentMiddleware(
