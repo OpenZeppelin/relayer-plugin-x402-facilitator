@@ -9,13 +9,16 @@
   },
   "files": [
     "dist",
+    "src",
     "README.md",
-    "package.json"
+    "package.json",
+    "tsconfig.json"
   ],
   "scripts": {
     "dev": "tsc --watch",
     "build": "tsc",
     "prebuild": "pnpm clean",
+    "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

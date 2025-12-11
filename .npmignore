@@ -1,0 +1,39 @@
+# Test files
+test/
+*.test.ts
+*.test.js
+
+# Development files
+.github/
+.cursor/
+.vscode/
+scripts/
+vitest.config.ts
+
+# Source maps (optional - remove this line if you want to include them)
+*.map
+
+# Config files
+.eslintrc*
+eslint.config.js
+.prettierrc*
+.prettierignore
+.editorconfig
+.changeset/
+
+# Logs and temp files
+*.log
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Lock files (keep package-lock.json if using npm)
+pnpm-lock.yaml
+yarn.lock
+
+# Build artifacts
+node_modules/
+coverage/
+.nyc_output/
+
