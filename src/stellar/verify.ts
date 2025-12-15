@@ -32,6 +32,7 @@ import {
   getNetworkPassphrase,
   getSignedAddressesFromAuthEntries,
   mapRelayerNetworkToStellar,
+  networksMatch,
 } from "./utils";
 
 import type { PluginAPI } from "@openzeppelin/relayer-sdk";
@@ -82,18 +83,29 @@ export async function verify(
   try {
     const { paymentPayload, paymentRequirements } = params;
 
-    // 1. Validate protocol version, scheme, and network
-    if (paymentPayload.x402Version !== 1) {
-      return invalidResponse("invalid_x402_version");
+    // 1. Validate protocol version - only v2 is supported
+    if (paymentPayload.x402Version !== 2) {
+      return invalidResponse(
+        "invalid_x402_version - only x402 v2 is supported. For v1 support, please use a previous version of this facilitator.",
+      );
     }
 
-    if (paymentPayload.scheme !== "exact") {
+    // Extract scheme and network from accepted field
+    if (!paymentPayload.accepted) {
+      return invalidResponse("invalid_x402_version - missing accepted field");
+    }
+
+    const scheme = paymentPayload.accepted.scheme;
+    const network = paymentPayload.accepted.network;
+
+    if (scheme !== "exact") {
       return invalidResponse("invalid_scheme");
     }
 
+    // Validate network matches between accepted, requirements, and config
     if (
-      paymentPayload.network !== paymentRequirements.network ||
-      paymentPayload.network !== networkConfig.network
+      !networksMatch(network, paymentRequirements.network) ||
+      !networksMatch(network, networkConfig.network)
     ) {
       return invalidResponse("invalid_network");
     }
@@ -108,7 +120,7 @@ export async function verify(
     const relayerInfo = await relayer.getRelayer();
     const mappedNetwork = mapRelayerNetworkToStellar(relayerInfo.network);
 
-    if (mappedNetwork !== networkConfig.network) {
+    if (!networksMatch(mappedNetwork, networkConfig.network)) {
       console.error(
         `Relayer network mismatch: ${relayerInfo.network} (${mappedNetwork}) !== ${networkConfig.network}`,
       );
@@ -194,7 +206,14 @@ export async function verify(
       );
     }
 
-    const requiredAmount = BigInt(paymentRequirements.maxAmountRequired);
+    // Validate amount (v2 uses amount field)
+    if (!paymentRequirements.amount) {
+      return invalidResponse(
+        "invalid_exact_stellar_payload_wrong_amount - missing amount",
+        fromAddress,
+      );
+    }
+    const requiredAmount = BigInt(paymentRequirements.amount);
     if (amount < requiredAmount) {
       return invalidResponse(
         "invalid_exact_stellar_payload_wrong_amount",

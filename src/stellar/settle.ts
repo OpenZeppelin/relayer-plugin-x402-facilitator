@@ -26,6 +26,7 @@ import { ScVal, StellarTransactionResponse } from "@openzeppelin/relayer-sdk";
 import {
   getNetworkPassphrase,
   mapRelayerNetworkToStellar,
+  networksMatch,
   scValToJsonArg,
 } from "./utils";
 
@@ -254,7 +255,15 @@ export async function settle(
   networkConfig: NetworkConfig,
 ): Promise<SettleResponse> {
   const { paymentPayload, paymentRequirements } = params;
-  const { network } = paymentPayload;
+
+  // Extract network from accepted field
+  if (!paymentPayload.accepted) {
+    return errorResponse(
+      "invalid_exact_stellar_payload_malformed - missing accepted field",
+      "",
+    );
+  }
+  const network = paymentPayload.accepted.network;
 
   const relayer = api.useRelayer(networkConfig.relayer_id);
   const relayerInfo = await relayer.getRelayer();
@@ -262,7 +271,7 @@ export async function settle(
   const mappedNetwork = mapRelayerNetworkToStellar(relayerInfo.network);
 
   // Return error response instead of throwing for network mismatch
-  if (mappedNetwork !== networkConfig.network) {
+  if (!networksMatch(mappedNetwork, networkConfig.network)) {
     console.error(
       `Relayer network mismatch: ${relayerInfo.network} (${mappedNetwork}) !== ${networkConfig.network}`,
     );

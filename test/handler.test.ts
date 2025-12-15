@@ -17,10 +17,14 @@ const networkConfig = {
   ],
 };
 
-function createApiWithLedger(sequence: number): PluginAPI {
+function createApiWithLedger(sequence: number, address?: string): PluginAPI {
   return {
     useRelayer: () =>
       ({
+        getRelayer: async () => ({
+          network: "testnet",
+          address: address || "RELAYER_ADDR",
+        }),
         rpc: async () => ({ result: { sequence } }),
       }) as any,
   } as any;
@@ -97,8 +101,8 @@ describe("handler routing", () => {
     expect((result as any).success).toBe(true);
   });
 
-  test("/supported returns kinds with maxLedger buffer", async () => {
-    const api = createApiWithLedger(100);
+  test("/supported returns v2 format with version-grouped kinds, signers, and extensions", async () => {
+    const api = createApiWithLedger(100, "G-RELAYER123");
     const result = await handler({
       route: "/supported",
       params: {},
@@ -111,9 +115,22 @@ describe("handler routing", () => {
     } as any);
 
     expect(result).toHaveProperty("kinds");
-    expect((result as any).kinds).toHaveLength(1);
-    expect((result as any).kinds[0].network).toBe("stellar-testnet");
-    expect((result as any).kinds[0].extra?.maxLedger).toBe("112"); // includes buffer
+    // v2 format: kinds grouped by version
+    expect((result as any).kinds).toHaveProperty("2");
+    expect((result as any).kinds["2"]).toHaveLength(1);
+    expect((result as any).kinds["2"][0].network).toBe("stellar-testnet");
+    expect((result as any).kinds["2"][0].scheme).toBe("exact");
+    expect((result as any).kinds["2"][0].extra?.maxLedger).toBe("112"); // includes buffer
+
+    // v2 format: signers field
+    expect(result).toHaveProperty("signers");
+    expect((result as any).signers).toHaveProperty("stellar-testnet");
+    expect((result as any).signers["stellar-testnet"]).toContain(
+      "G-RELAYER123",
+    );
+
+    // v2 format: extensions field (may be undefined if empty)
+    expect(result).toHaveProperty("extensions");
   });
 
   test("unknown route returns 404 error", async () => {
@@ -190,6 +207,10 @@ describe("handler routing", () => {
     const api = {
       useRelayer: () =>
         ({
+          getRelayer: async () => ({
+            network: "testnet",
+            address: "G-RELAYER",
+          }),
           rpc: async () => ({ error: { message: "RPC error" } }),
         }) as any,
     } as any;
@@ -206,10 +227,15 @@ describe("handler routing", () => {
     } as any);
 
     expect(result).toHaveProperty("kinds");
-    expect((result as any).kinds).toHaveLength(1);
-    expect((result as any).kinds[0].network).toBe("stellar-testnet");
+    // v2 format: kinds grouped by version
+    expect((result as any).kinds).toHaveProperty("2");
+    expect((result as any).kinds["2"]).toHaveLength(1);
+    expect((result as any).kinds["2"][0].network).toBe("stellar-testnet");
     // maxLedger should be undefined when RPC fails
-    expect((result as any).kinds[0].extra).toEqual({});
+    expect((result as any).kinds["2"][0].extra).toEqual({});
+    // signers should still be present even if ledger fetch fails
+    expect(result).toHaveProperty("signers");
+    expect((result as any).signers["stellar-testnet"]).toContain("G-RELAYER");
   });
 
   test("root route '/' returns info", async () => {

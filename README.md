@@ -2,6 +2,8 @@
 
 OpenZeppelin Relayer plugin that implements the x402 facilitator API so you can serve x402 payments directly from a Relayer instance. Works with the Coinbase x402 ecosystem (e.g., `x402-express`) and exposes the expected `/verify`, `/settle`, and `/supported` endpoints under the Relayer plugin router.
 
+**This version supports x402 v2 specification.** For x402 v1 support, please use a previous version of this plugin (check git history for v1-compatible releases).
+
 ## What you get
 
 - x402 facilitator API implemented as a Relayer plugin (Stellar support today)
@@ -86,9 +88,39 @@ Each object in `config.networks`:
 All routes hang off the Relayer plugin call endpoint: `POST /api/v1/plugins/{plugin_id}/call{route}`.
 
 - `/` or ``: info
-- `/verify`: x402 verify
-- `/settle`: x402 settle
-- `/supported`: discovery of supported payment kinds
+- `/verify`: x402 v2 verify
+- `/settle`: x402 v2 settle
+- `/supported`: discovery of supported payment kinds (returns v2 format)
+
+### x402 v2 Specification
+
+This plugin implements the x402 v2 specification, which includes:
+
+- **PaymentPayload v2**: Uses `accepted` field instead of top-level `scheme` and `network`
+- **PaymentRequirements v2**: Uses `amount` instead of `maxAmountRequired`, removed `resource`/`description`/`mimeType` (moved to top-level `PaymentRequired`)
+- **Supported endpoint v2**: Returns version-grouped `kinds`, `signers`, and `extensions` fields
+
+The `/supported` endpoint returns data in the following v2 format:
+
+```json
+{
+  "kinds": {
+    "2": [
+      {
+        "scheme": "exact",
+        "network": "stellar-testnet",
+        "extra": {
+          "maxLedger": "112"
+        }
+      }
+    ]
+  },
+  "signers": {
+    "stellar-testnet": ["G-RELAYER-ADDRESS"]
+  },
+  "extensions": []
+}
+```
 
 ## Using with x402 packages (e.g., x402-express)
 

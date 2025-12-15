@@ -20,6 +20,7 @@ import type {
   PluginContext,
   SettleRequest,
   SettleResponse,
+  SupportedPaymentKindV2,
   SupportedPaymentKindsResponse,
   VerifyRequest,
   VerifyResponse,
@@ -157,20 +158,25 @@ async function getLatestLedger(
 
 /**
  * Supported endpoint handler
- * Returns supported payment kinds with current max ledger for each network
+ * Returns supported payment kinds in v2 format with version-grouped kinds, signers, and extensions
  */
 async function handleSupported(
   api: PluginAPI,
   config: X402PluginConfig,
 ): Promise<SupportedPaymentKindsResponse> {
-  // Fetch latest ledger for each Stellar network in parallel
-  const kindsPromises = config.networks.map(
+  // Fetch latest ledger and relayer info for each network in parallel
+  const networkPromises = config.networks.map(
     async (networkConfig: NetworkConfig) => {
       let maxLedger: string | undefined;
+      let relayerAddress: string | undefined;
 
       // For Stellar networks, get the current ledger and add buffer
       if (networkConfig.type === "stellar") {
         try {
+          const relayer = api.useRelayer(networkConfig.relayer_id);
+          const relayerInfo = await relayer.getRelayer();
+          relayerAddress = relayerInfo.address;
+
           const latestLedger = await getLatestLedger(
             api,
             networkConfig.relayer_id,
@@ -184,18 +190,61 @@ async function handleSupported(
           );
           // Fallback: don't include maxLedger if we can't fetch it
         }
+      } else {
+        // For non-Stellar networks, still get relayer address
+        try {
+          const relayer = api.useRelayer(networkConfig.relayer_id);
+          const relayerInfo = await relayer.getRelayer();
+          relayerAddress = relayerInfo.address;
+        } catch (error) {
+          console.error(
+            `Failed to get relayer info for ${networkConfig.network}:`,
+            error,
+          );
+        }
       }
 
       return {
-        x402Version: 1 as const,
-        scheme: "exact" as const,
-        network: networkConfig.network,
-        extra: maxLedger ? { maxLedger } : {},
+        networkConfig,
+        kind: {
+          scheme: "exact" as const,
+          network: networkConfig.network,
+          extra: maxLedger ? { maxLedger } : {},
+        },
+        relayerAddress,
       };
     },
   );
 
-  const kinds = await Promise.all(kindsPromises);
+  const networkResults = await Promise.all(networkPromises);
 
-  return { kinds };
+  // Group kinds by version (v2 only for now, but structure supports v1)
+  const kindsByVersion: { [version: string]: SupportedPaymentKindV2[] } = {
+    "2": networkResults.map((result) => result.kind),
+  };
+
+  // Build signers map: group by network pattern
+  // For now, we'll use exact network matches, but could support wildcards like "stellar:*"
+  const signers: { [networkPattern: string]: string[] } = {};
+  for (const result of networkResults) {
+    if (result.relayerAddress) {
+      const networkPattern = result.networkConfig.network;
+      if (!signers[networkPattern]) {
+        signers[networkPattern] = [];
+      }
+      if (!signers[networkPattern].includes(result.relayerAddress)) {
+        signers[networkPattern].push(result.relayerAddress);
+      }
+    }
+  }
+
+  // Extensions supported by this facilitator
+  // Currently empty, but can be extended in the future (e.g., ["discovery"])
+  const extensions: string[] = [];
+
+  return {
+    kinds: kindsByVersion,
+    signers: Object.keys(signers).length > 0 ? signers : undefined,
+    extensions: extensions.length > 0 ? extensions : undefined,
+  };
 }

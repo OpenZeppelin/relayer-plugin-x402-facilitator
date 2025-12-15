@@ -8,7 +8,7 @@ import {
 export const schemes = ["exact"] as const;
 export type Scheme = (typeof schemes)[number];
 
-export const x402Versions = [1] as const;
+export const x402Versions = [2] as const;
 export type X402Version = (typeof x402Versions)[number];
 
 export type Network = string;
@@ -36,33 +36,44 @@ export type ExactStellarPayload = {
   transaction: string; // base64 transaction
 };
 
-// Payment payload
+// Payment payload v2 (v1 is not supported - use previous version for v1)
 export type PaymentPayload = {
-  x402Version: X402Version;
-  scheme: Scheme;
-  network: Network;
+  x402Version: 2;
+  accepted: PaymentRequirements;
   payload: ExactEvmPayload | ExactSvmPayload | ExactStellarPayload;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  extensions?: Record<string, any>;
 };
 
 export type UnsignedPaymentPayload = Omit<PaymentPayload, "payload"> & {
   payload: Omit<ExactEvmPayload, "signature"> & { signature: undefined };
 };
 
-// Payment requirements
+// Payment requirements (v2 format - resource, description, mimeType moved to PaymentRequired)
 export type PaymentRequirements = {
   scheme: Scheme;
   network: Network;
-  maxAmountRequired: string; // integer string
-  resource: string; // URL
-  description: string;
-  mimeType: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  outputSchema?: Record<string, any>;
-  payTo: string; // account address
+  amount: string; // integer string
+  payTo: string; // account address or constant (e.g., "merchant")
   maxTimeoutSeconds: number;
-  asset: string; // account or asset address
+  asset: string; // account or asset address, or ISO 4217 currency code
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   extra?: Record<string, any>;
+};
+
+// PaymentRequired (top-level response in v2)
+export type PaymentRequired = {
+  x402Version: X402Version;
+  error?: string;
+  resource: {
+    url: string;
+    description: string;
+    website?: string;
+    mimeType: string;
+  };
+  accepts: PaymentRequirements[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  extensions?: Record<string, any>;
 };
 
 // Requests
@@ -91,7 +102,7 @@ export type SettleResponse = {
   network: Network;
 };
 
-// Supported payment kinds
+// Supported payment kinds (v1 format)
 export type SupportedPaymentKind = {
   x402Version: X402Version;
   scheme: Scheme;
@@ -100,8 +111,23 @@ export type SupportedPaymentKind = {
   extra?: Record<string, any>;
 };
 
+// Supported payment kind without version (used in v2 grouped format)
+export type SupportedPaymentKindV2 = {
+  scheme: Scheme;
+  network: Network;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  extra?: Record<string, any>;
+};
+
+// Supported payment kinds response (v2 format)
 export type SupportedPaymentKindsResponse = {
-  kinds: SupportedPaymentKind[];
+  kinds: {
+    [version: string]: SupportedPaymentKindV2[];
+  };
+  extensions?: string[];
+  signers?: {
+    [networkPattern: string]: string[];
+  };
 };
 
 export type NetworkConfig = {

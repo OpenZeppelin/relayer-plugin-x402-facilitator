@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   buildInvokeTxBase64,
   buildPaymentPayload,
+  buildPaymentPayloadV2,
   buildPaymentRequirements,
+  buildPaymentRequirementsV2,
 } from "./helpers/payload";
 
 import { verify } from "../src/stellar/verify";
@@ -87,8 +89,8 @@ describe("stellar verify", () => {
 
   test("rejects unsupported asset", async () => {
     const tx = buildInvokeTxBase64();
-    const reqs = buildPaymentRequirements({ asset: "OTHER_ASSET" });
-    const payload = buildPaymentPayload(tx);
+    const reqs = buildPaymentRequirementsV2({ asset: "OTHER_ASSET" });
+    const payload = buildPaymentPayloadV2(tx, { asset: "OTHER_ASSET" });
 
     const result = await verify(
       { paymentPayload: payload, paymentRequirements: reqs } as any,
@@ -107,8 +109,8 @@ describe("stellar verify", () => {
         .fn()
         .mockResolvedValue({ network: "mainnet", address: "RELAYER_ADDR" }),
     });
-    const payload = buildPaymentPayload(tx);
-    const reqs = buildPaymentRequirements();
+    const payload = buildPaymentPayloadV2(tx);
+    const reqs = buildPaymentRequirementsV2();
 
     const result = await verify(
       { paymentPayload: payload, paymentRequirements: reqs } as any,
@@ -120,7 +122,7 @@ describe("stellar verify", () => {
     expect(result.invalidReason).toBe("verify_network_mismatch");
   });
 
-  test("validates success path and returns payer", async () => {
+  test("validates success path and returns payer (v1 - should be rejected)", async () => {
     const tx = buildInvokeTxBase64({
       payer: "G-PAYER",
       payTo: "G-PAYEE",
@@ -144,13 +146,14 @@ describe("stellar verify", () => {
       networkConfig,
     );
 
-    expect(result.isValid).toBe(true);
-    expect(result.payer).toBe("G-PAYER");
+    // v1 should be rejected
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toContain("only x402 v2 is supported");
   });
 
-  test("rejects invalid x402 version", async () => {
+  test("rejects v1 x402 version", async () => {
     const tx = buildInvokeTxBase64();
-    const payload = { ...buildPaymentPayload(tx), x402Version: 2 };
+    const payload = buildPaymentPayload(tx);
     const reqs = buildPaymentRequirements();
 
     const result = await verify(
@@ -160,13 +163,65 @@ describe("stellar verify", () => {
     );
 
     expect(result.isValid).toBe(false);
-    expect(result.invalidReason).toBe("invalid_x402_version");
+    expect(result.invalidReason).toContain("invalid_x402_version");
+    expect(result.invalidReason).toContain("only x402 v2 is supported");
+  });
+
+  test("validates v2 payload successfully", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "150",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "150",
+    });
+
+    const api = makeApi();
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(true);
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("rejects v2 payload with missing accepted field", async () => {
+    const tx = buildInvokeTxBase64();
+    const payload = {
+      x402Version: 2,
+      payload: { transaction: tx },
+    };
+
+    const result = await verify(
+      {
+        paymentPayload: payload,
+        paymentRequirements: buildPaymentRequirementsV2(),
+      } as any,
+      makeApi(),
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toContain("missing accepted field");
   });
 
   test("rejects invalid scheme", async () => {
     const tx = buildInvokeTxBase64();
-    const payload = { ...buildPaymentPayload(tx), scheme: "invalid" };
-    const reqs = buildPaymentRequirements();
+    const payload = buildPaymentPayloadV2(tx, { scheme: "invalid" as any });
+    const reqs = buildPaymentRequirementsV2({ scheme: "invalid" as any });
 
     const result = await verify(
       { paymentPayload: payload, paymentRequirements: reqs } as any,
@@ -180,8 +235,8 @@ describe("stellar verify", () => {
 
   test("rejects network mismatch between payload and requirements", async () => {
     const tx = buildInvokeTxBase64();
-    const payload = buildPaymentPayload(tx, { network: "stellar-mainnet" });
-    const reqs = buildPaymentRequirements({ network: "stellar-testnet" });
+    const payload = buildPaymentPayloadV2(tx, { network: "stellar-mainnet" });
+    const reqs = buildPaymentRequirementsV2({ network: "stellar-testnet" });
 
     const result = await verify(
       { paymentPayload: payload, paymentRequirements: reqs } as any,
@@ -199,10 +254,13 @@ describe("stellar verify", () => {
       payTo: "G-WRONG",
       amount: 200n,
     });
-    const payload = buildPaymentPayload(tx);
-    const reqs = buildPaymentRequirements({
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-WRONG",
+      amount: "150",
+    });
+    const reqs = buildPaymentRequirementsV2({
       payTo: "G-PAYEE",
-      maxAmountRequired: "150",
+      amount: "150",
     });
 
     const api = makeApi();
@@ -220,16 +278,19 @@ describe("stellar verify", () => {
     expect(result.payer).toBe("G-PAYER");
   });
 
-  test("rejects insufficient payment amount", async () => {
+  test("rejects insufficient payment amount (v2)", async () => {
     const tx = buildInvokeTxBase64({
       payer: "G-PAYER",
       payTo: "G-PAYEE",
       amount: 100n,
     });
-    const payload = buildPaymentPayload(tx);
-    const reqs = buildPaymentRequirements({
+    const payload = buildPaymentPayloadV2(tx, {
       payTo: "G-PAYEE",
-      maxAmountRequired: "150",
+      amount: "150",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "150",
     });
 
     const api = makeApi();
@@ -254,10 +315,13 @@ describe("stellar verify", () => {
       amount: 200n,
       signatures: [{ signature: "SIG" }],
     });
-    const payload = buildPaymentPayload(tx);
-    const reqs = buildPaymentRequirements({
+    const payload = buildPaymentPayloadV2(tx, {
       payTo: "G-PAYEE",
-      maxAmountRequired: "150",
+      amount: "150",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "150",
     });
 
     const api = makeApi();
@@ -280,10 +344,13 @@ describe("stellar verify", () => {
       payTo: "G-PAYEE",
       amount: 200n,
     });
-    const payload = buildPaymentPayload(tx);
-    const reqs = buildPaymentRequirements({
+    const payload = buildPaymentPayloadV2(tx, {
       payTo: "G-PAYEE",
-      maxAmountRequired: "150",
+      amount: "150",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "150",
     });
 
     const api = makeApi();
@@ -312,10 +379,14 @@ describe("stellar verify", () => {
       amount: 200n,
       asset: "WRONG_CONTRACT",
     });
-    const payload = buildPaymentPayload(tx);
-    const reqs = buildPaymentRequirements({
+    const payload = buildPaymentPayloadV2(tx, {
       payTo: "G-PAYEE",
-      maxAmountRequired: "150",
+      amount: "150",
+      asset: "WRONG_CONTRACT",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "150",
     });
 
     const api = makeApi();
@@ -341,10 +412,13 @@ describe("stellar verify", () => {
         functionName: () => Buffer.from("approve"),
       },
     });
-    const payload = buildPaymentPayload(tx);
-    const reqs = buildPaymentRequirements({
+    const payload = buildPaymentPayloadV2(tx, {
       payTo: "G-PAYEE",
-      maxAmountRequired: "150",
+      amount: "150",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "150",
     });
 
     const api = makeApi();

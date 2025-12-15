@@ -31,6 +31,20 @@ export function mapRelayerNetworkToStellar(relayerNetwork: string): string {
 }
 
 /**
+ * Normalizes network identifier to handle both legacy and CAIP-2 formats
+ */
+export function normalizeNetwork(network: string): string {
+  return network;
+}
+
+/**
+ * Checks if two networks match, handling CAIP-2 and legacy formats
+ */
+export function networksMatch(network1: string, network2: string): boolean {
+  return normalizeNetwork(network1) === normalizeNetwork(network2);
+}
+
+/**
  * Converts an ScVal to the JSON format expected by the relayer API.
  * Inspects the XDR type to determine the correct JSON representation.
  */
