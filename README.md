@@ -59,7 +59,7 @@ export { handler } from "@openzeppelin/relayer-plugin-x402-facilitator";
       "config": {
         "networks": [
           {
-            "network": "stellar-testnet",
+            "network": "stellar:testnet",
             "type": "stellar",
             "relayer_id": "stellar-example",
             "assets": [
@@ -77,7 +77,7 @@ export { handler } from "@openzeppelin/relayer-plugin-x402-facilitator";
 
 Each object in `config.networks`:
 
-- `network`: x402 network identifier (e.g., `stellar-testnet`)
+- `network`: x402 network identifier (e.g., `stellar:testnet`)
 - `type`: `"stellar"` (current support)
 - `relayer_id`: ID of the Relayer account to use for this network
 - `assets`: list of allowed assets (issuer addresses for Stellar)
@@ -108,7 +108,7 @@ The `/supported` endpoint returns data in the following v2 format:
     "2": [
       {
         "scheme": "exact",
-        "network": "stellar-testnet",
+        "network": "stellar:testnet",
         "extra": {
           "maxLedger": "112"
         }
@@ -116,7 +116,7 @@ The `/supported` endpoint returns data in the following v2 format:
     ]
   },
   "signers": {
-    "stellar-testnet": ["G-RELAYER-ADDRESS"]
+    "stellar:testnet": ["G-RELAYER-ADDRESS"]
   },
   "extensions": []
 }
@@ -130,7 +130,7 @@ Point the facilitator to your Relayer plugin URL and pass the Relayer API key vi
 import { paymentMiddleware } from "x402-express";
 
 const facilitatorUrl = "https://your-relayer-host/api/v1/plugins/x402/call";
-const network = "stellar-testnet";
+const network = "stellar:testnet";
 const payTo = "G..."; // Payment receiver G address
 
 app.use(
