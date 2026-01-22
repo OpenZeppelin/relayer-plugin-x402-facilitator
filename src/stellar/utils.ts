@@ -10,8 +10,8 @@ import { ScVal } from "@openzeppelin/relayer-sdk";
  */
 export function getNetworkPassphrase(network: string): string {
   const networkMap: Record<string, string> = {
-    "stellar-mainnet": "Public Global Stellar Network ; September 2015",
-    "stellar-testnet": "Test SDF Network ; September 2015",
+    "stellar:pubnet": "Public Global Stellar Network ; September 2015",
+    "stellar:testnet": "Test SDF Network ; September 2015",
     mainnet: "Public Global Stellar Network ; September 2015",
     testnet: "Test SDF Network ; September 2015",
   };
@@ -27,7 +27,7 @@ export function getNetworkPassphrase(network: string): string {
  * Maps relayer network name to Stellar network format
  */
 export function mapRelayerNetworkToStellar(relayerNetwork: string): string {
-  return relayerNetwork === "testnet" ? "stellar-testnet" : "stellar";
+  return relayerNetwork === "testnet" ? "stellar:testnet" : "stellar";
 }
 
 /**

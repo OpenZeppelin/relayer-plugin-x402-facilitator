@@ -119,11 +119,9 @@ export type SupportedPaymentKindV2 = {
   extra?: Record<string, any>;
 };
 
-// Supported payment kinds response (v2 format)
+// Supported payment kinds response
 export type SupportedPaymentKindsResponse = {
-  kinds: {
-    [version: string]: SupportedPaymentKindV2[];
-  };
+  kinds: SupportedPaymentKind[];
   extensions?: string[];
   signers?: {
     [networkPattern: string]: string[];

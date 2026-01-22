@@ -20,7 +20,6 @@ import type {
   PluginContext,
   SettleRequest,
   SettleResponse,
-  SupportedPaymentKindV2,
   SupportedPaymentKindsResponse,
   VerifyRequest,
   VerifyResponse,
@@ -207,6 +206,7 @@ async function handleSupported(
       return {
         networkConfig,
         kind: {
+          x402Version: 2 as const,
           scheme: "exact" as const,
           network: networkConfig.network,
           extra: maxLedger ? { maxLedger } : {},
@@ -218,10 +218,8 @@ async function handleSupported(
 
   const networkResults = await Promise.all(networkPromises);
 
-  // Group kinds by version (v2 only for now, but structure supports v1)
-  const kindsByVersion: { [version: string]: SupportedPaymentKindV2[] } = {
-    "2": networkResults.map((result) => result.kind),
-  };
+  // Build kinds array with version included in each kind
+  const kinds = networkResults.map((result) => result.kind);
 
   // Build signers map: group by network pattern
   // For now, we'll use exact network matches, but could support wildcards like "stellar:*"
@@ -243,7 +241,7 @@ async function handleSupported(
   const extensions: string[] = [];
 
   return {
-    kinds: kindsByVersion,
+    kinds,
     signers: Object.keys(signers).length > 0 ? signers : undefined,
     extensions: extensions.length > 0 ? extensions : undefined,
   };
