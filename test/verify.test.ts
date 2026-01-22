@@ -61,7 +61,7 @@ vi.mock("@stellar/stellar-sdk", () => {
 });
 
 const networkConfig = {
-  network: "stellar-testnet",
+  network: "stellar:testnet",
   type: "stellar" as const,
   relayer_id: "relayer-1",
   assets: ["ASSET_CONTRACT"],
@@ -235,8 +235,8 @@ describe("stellar verify", () => {
 
   test("rejects network mismatch between payload and requirements", async () => {
     const tx = buildInvokeTxBase64();
-    const payload = buildPaymentPayloadV2(tx, { network: "stellar-mainnet" });
-    const reqs = buildPaymentRequirementsV2({ network: "stellar-testnet" });
+    const payload = buildPaymentPayloadV2(tx, { network: "stellar:pubnet" });
+    const reqs = buildPaymentRequirementsV2({ network: "stellar:testnet" });
 
     const result = await verify(
       { paymentPayload: payload, paymentRequirements: reqs } as any,

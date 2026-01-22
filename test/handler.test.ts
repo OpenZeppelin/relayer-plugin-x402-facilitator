@@ -9,7 +9,7 @@ import { handler } from "../src/handler";
 const networkConfig = {
   networks: [
     {
-      network: "stellar-testnet",
+      network: "stellar:testnet",
       type: "stellar",
       relayer_id: "relayer-1",
       assets: ["ASSET_CONTRACT"],
@@ -59,8 +59,8 @@ describe("handler routing", () => {
     const result = await handler({
       route: "/verify",
       params: {
-        paymentRequirements: { network: "stellar-testnet" },
-        paymentPayload: { network: "stellar-testnet" },
+        paymentRequirements: { network: "stellar:testnet" },
+        paymentPayload: { network: "stellar:testnet" },
       },
       api: {} as any,
       config: networkConfig,
@@ -79,14 +79,14 @@ describe("handler routing", () => {
     const settleSpy = vi.spyOn(stellarSettle, "settle").mockResolvedValue({
       success: true,
       transaction: "TX",
-      network: "stellar-testnet",
+      network: "stellar:testnet",
     });
 
     const result = await handler({
       route: "/settle",
       params: {
-        paymentRequirements: { network: "stellar-testnet" },
-        paymentPayload: { network: "stellar-testnet" },
+        paymentRequirements: { network: "stellar:testnet" },
+        paymentPayload: { network: "stellar:testnet" },
       },
       api: {} as any,
       config: networkConfig,
@@ -101,7 +101,7 @@ describe("handler routing", () => {
     expect((result as any).success).toBe(true);
   });
 
-  test("/supported returns v2 format with version-grouped kinds, signers, and extensions", async () => {
+  test("/supported returns kinds array with signers and extensions", async () => {
     const api = createApiWithLedger(100, "G-RELAYER123");
     const result = await handler({
       route: "/supported",
@@ -115,21 +115,21 @@ describe("handler routing", () => {
     } as any);
 
     expect(result).toHaveProperty("kinds");
-    // v2 format: kinds grouped by version
-    expect((result as any).kinds).toHaveProperty("2");
-    expect((result as any).kinds["2"]).toHaveLength(1);
-    expect((result as any).kinds["2"][0].network).toBe("stellar-testnet");
-    expect((result as any).kinds["2"][0].scheme).toBe("exact");
-    expect((result as any).kinds["2"][0].extra?.maxLedger).toBe("112"); // includes buffer
+    // kinds is a flat array with x402Version in each item
+    expect((result as any).kinds).toHaveLength(1);
+    expect((result as any).kinds[0].x402Version).toBe(2);
+    expect((result as any).kinds[0].network).toBe("stellar:testnet");
+    expect((result as any).kinds[0].scheme).toBe("exact");
+    expect((result as any).kinds[0].extra?.maxLedger).toBe("112"); // includes buffer
 
-    // v2 format: signers field
+    // signers field
     expect(result).toHaveProperty("signers");
-    expect((result as any).signers).toHaveProperty("stellar-testnet");
-    expect((result as any).signers["stellar-testnet"]).toContain(
+    expect((result as any).signers).toHaveProperty("stellar:testnet");
+    expect((result as any).signers["stellar:testnet"]).toContain(
       "G-RELAYER123",
     );
 
-    // v2 format: extensions field (may be undefined if empty)
+    // extensions field (may be undefined if empty)
     expect(result).toHaveProperty("extensions");
   });
 
@@ -227,15 +227,15 @@ describe("handler routing", () => {
     } as any);
 
     expect(result).toHaveProperty("kinds");
-    // v2 format: kinds grouped by version
-    expect((result as any).kinds).toHaveProperty("2");
-    expect((result as any).kinds["2"]).toHaveLength(1);
-    expect((result as any).kinds["2"][0].network).toBe("stellar-testnet");
+    // kinds is a flat array
+    expect((result as any).kinds).toHaveLength(1);
+    expect((result as any).kinds[0].x402Version).toBe(2);
+    expect((result as any).kinds[0].network).toBe("stellar:testnet");
     // maxLedger should be undefined when RPC fails
-    expect((result as any).kinds["2"][0].extra).toEqual({});
+    expect((result as any).kinds[0].extra).toEqual({});
     // signers should still be present even if ledger fetch fails
     expect(result).toHaveProperty("signers");
-    expect((result as any).signers["stellar-testnet"]).toContain("G-RELAYER");
+    expect((result as any).signers["stellar:testnet"]).toContain("G-RELAYER");
   });
 
   test("root route '/' returns info", async () => {

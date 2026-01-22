@@ -6,13 +6,13 @@ import {
 
 describe("stellar utils", () => {
   describe("getNetworkPassphrase", () => {
-    test("returns mainnet passphrase for stellar-mainnet", () => {
-      const result = getNetworkPassphrase("stellar-mainnet");
+    test("returns mainnet passphrase for stellar:pubnet", () => {
+      const result = getNetworkPassphrase("stellar:pubnet");
       expect(result).toBe("Public Global Stellar Network ; September 2015");
     });
 
-    test("returns testnet passphrase for stellar-testnet", () => {
-      const result = getNetworkPassphrase("stellar-testnet");
+    test("returns testnet passphrase for stellar:testnet", () => {
+      const result = getNetworkPassphrase("stellar:testnet");
       expect(result).toBe("Test SDF Network ; September 2015");
     });
 
@@ -32,15 +32,15 @@ describe("stellar utils", () => {
     });
 
     test("handles case insensitive network names", () => {
-      const result = getNetworkPassphrase("STELLAR-MAINNET");
+      const result = getNetworkPassphrase("STELLAR:PUBNET");
       expect(result).toBe("Public Global Stellar Network ; September 2015");
     });
   });
 
   describe("mapRelayerNetworkToStellar", () => {
-    test("maps testnet to stellar-testnet", () => {
+    test("maps testnet to stellar:testnet", () => {
       const result = mapRelayerNetworkToStellar("testnet");
-      expect(result).toBe("stellar-testnet");
+      expect(result).toBe("stellar:testnet");
     });
 
     test("maps mainnet to stellar", () => {

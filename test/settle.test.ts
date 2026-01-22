@@ -62,7 +62,7 @@ vi.mock("@stellar/stellar-sdk", () => {
 });
 
 const baseNetworkConfig = {
-  network: "stellar-testnet",
+  network: "stellar:testnet",
   type: "stellar" as const,
   relayer_id: "relayer-1",
   assets: ["ASSET_CONTRACT"],

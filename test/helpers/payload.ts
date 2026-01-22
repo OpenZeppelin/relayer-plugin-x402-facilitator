@@ -82,7 +82,7 @@ export function buildPaymentRequirements(
 ) {
   return {
     scheme: "exact",
-    network: "stellar-testnet",
+    network: "stellar:testnet",
     maxAmountRequired: "100",
     resource: "/resource",
     description: "test",
@@ -101,7 +101,7 @@ export function buildPaymentPayload(
   return {
     x402Version: 1,
     scheme: "exact",
-    network: "stellar-testnet",
+    network: "stellar:testnet",
     payload: {
       transaction: txBase64,
     },
@@ -120,7 +120,7 @@ export function buildPaymentRequirementsV2(
 ) {
   return {
     scheme: "exact",
-    network: "stellar-testnet",
+    network: "stellar:testnet",
     amount: "100",
     payTo: "G-PAYEE",
     maxTimeoutSeconds: 30,
