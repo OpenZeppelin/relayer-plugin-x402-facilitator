@@ -104,17 +104,16 @@ The `/supported` endpoint returns data in the following v2 format:
 
 ```json
 {
-  "kinds": {
-    "2": [
-      {
-        "scheme": "exact",
-        "network": "stellar:testnet",
-        "extra": {
-          "maxLedger": "112"
-        }
+  "kinds": [
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "stellar:testnet",
+      "extra": {
+        "maxLedgerOffset": 12
       }
-    ]
-  },
+    }
+  ],
   "signers": {
     "stellar:testnet": ["G-RELAYER-ADDRESS"]
   },
