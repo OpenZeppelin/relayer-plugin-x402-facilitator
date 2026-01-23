@@ -147,6 +147,37 @@ export function getExpirationLedgersFromAuthEntries(
 }
 
 /**
+ * Extracts all addresses from auth entries attached to the operation.
+ *
+ * Returns all unique addresses found in auth entries, regardless of signature status.
+ * This is used for security checks to ensure certain addresses don't appear in auth entries.
+ */
+export function getAllAddressesFromAuthEntries(
+  authEntries: xdr.SorobanAuthorizationEntry[],
+): string[] {
+  const addresses: string[] = [];
+
+  for (const authEntry of authEntries) {
+    try {
+      const credentials = authEntry.credentials();
+      const credentialsType = credentials.switch().name;
+
+      if (credentialsType === "sorobanCredentialsAddress") {
+        const addressCredentials = credentials.address();
+        const address = Address.fromScAddress(
+          addressCredentials.address(),
+        ).toString();
+        addresses.push(address);
+      }
+    } catch (error) {
+      console.error("Error extracting address from auth entry:", error);
+    }
+  }
+
+  return addresses;
+}
+
+/**
  * Extracts signed addresses from auth entries attached to the operation.
  *
  * For Soroban transactions, the client signs auth entries (not the transaction envelope).

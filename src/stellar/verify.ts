@@ -30,6 +30,7 @@ import {
   VerifyResponse,
 } from "../types";
 import {
+  getAllAddressesFromAuthEntries,
   getExpirationLedgersFromAuthEntries,
   getNetworkPassphrase,
   getSignedAddressesFromAuthEntries,
@@ -55,6 +56,9 @@ type ErrorReason =
   | "invalid_exact_stellar_payload_wrong_amount"
   | "invalid_exact_stellar_payload_simulation_failed"
   | "invalid_exact_stellar_payload_unsafe_tx_or_op_source"
+  | "invalid_exact_stellar_payload_unsafe_from_address"
+  | "invalid_exact_stellar_payload_facilitator_in_auth"
+  | "invalid_exact_stellar_payload_unexpected_balance_changes"
   | "invalid_exact_stellar_payload_has_envelope_signatures"
   | "invalid_exact_stellar_payload_missing_auth_entries"
   | "invalid_exact_stellar_payload_missing_payer_auth"
@@ -106,6 +110,11 @@ export async function verify(
     const network = paymentPayload.accepted.network;
 
     if (scheme !== "exact") {
+      return invalidResponse("invalid_scheme");
+    }
+
+    // Validate requirements.scheme is also "exact"
+    if (paymentRequirements.scheme !== "exact") {
       return invalidResponse("invalid_scheme");
     }
 
@@ -206,6 +215,18 @@ export async function verify(
     const toAddress = scValToNative(args[1]) as string;
     const amount = scValToNative(args[2]) as bigint;
 
+    // Security check: facilitator MUST NOT be the from address in the transfer
+    // This prevents the facilitator from being tricked into transferring their own funds
+    if (relayerInfo.address && fromAddress === relayerInfo.address) {
+      console.error(
+        `Security violation: from address is the facilitator: ${fromAddress}`,
+      );
+      return invalidResponse(
+        "invalid_exact_stellar_payload_unsafe_from_address",
+        fromAddress,
+      );
+    }
+
     if (toAddress !== paymentRequirements.payTo) {
       return invalidResponse(
         "invalid_exact_stellar_payload_wrong_recipient",
@@ -281,6 +302,22 @@ export async function verify(
       );
       return invalidResponse(
         "invalid_exact_stellar_payload_unsigned_auth_entry",
+        fromAddress,
+      );
+    }
+
+    // Security check: facilitator address MUST NOT appear in any authorization entries
+    // This prevents the facilitator from being tricked into authorizing unintended actions
+    const allAuthAddresses = getAllAddressesFromAuthEntries(authEntries);
+    if (
+      relayerInfo.address &&
+      allAuthAddresses.includes(relayerInfo.address)
+    ) {
+      console.error(
+        `Security violation: facilitator address ${relayerInfo.address} found in auth entries`,
+      );
+      return invalidResponse(
+        "invalid_exact_stellar_payload_facilitator_in_auth",
         fromAddress,
       );
     }
