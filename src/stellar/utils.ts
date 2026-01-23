@@ -112,6 +112,41 @@ export function scValToJsonArg(scVal: xdr.ScVal): ScVal {
 }
 
 /**
+ * Extracts expiration ledger sequences from auth entries.
+ *
+ * For Soroban transactions with `sorobanCredentialsAddress` type credentials,
+ * the signatureExpirationLedger field specifies when the authorization expires.
+ *
+ * @returns Array of expiration ledger numbers from all address-credential auth entries
+ */
+export function getExpirationLedgersFromAuthEntries(
+  authEntries: xdr.SorobanAuthorizationEntry[],
+): number[] {
+  const expirationLedgers: number[] = [];
+
+  for (const authEntry of authEntries) {
+    try {
+      const credentials = authEntry.credentials();
+      const credentialsType = credentials.switch().name;
+
+      if (credentialsType === "sorobanCredentialsAddress") {
+        const addressCredentials = credentials.address();
+        const expirationLedger = addressCredentials.signatureExpirationLedger();
+        expirationLedgers.push(expirationLedger);
+      }
+      // sorobanCredentialsSourceAccount doesn't have an expiration ledger
+    } catch (error) {
+      console.error(
+        "Error extracting expiration ledger from auth entry:",
+        error,
+      );
+    }
+  }
+
+  return expirationLedgers;
+}
+
+/**
  * Extracts signed addresses from auth entries attached to the operation.
  *
  * For Soroban transactions, the client signs auth entries (not the transaction envelope).

@@ -73,7 +73,13 @@ const makeApi = (overrides: Partial<any> = {}) =>
       getRelayer: vi
         .fn()
         .mockResolvedValue({ network: "testnet", address: "RELAYER_ADDR" }),
-      rpc: vi.fn().mockResolvedValue({ result: {} }),
+      rpc: vi.fn().mockImplementation((params: any) => {
+        if (params.method === "getLatestLedger") {
+          return Promise.resolve({ result: { sequence: 1000 } });
+        }
+        // simulateTransaction
+        return Promise.resolve({ result: {} });
+      }),
       ...overrides,
     }),
   }) as any;
@@ -433,5 +439,123 @@ describe("stellar verify", () => {
     expect(result.invalidReason).toBe(
       "invalid_exact_stellar_payload_wrong_function_name",
     );
+  });
+
+  test("rejects auth entry that has already expired", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "150",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "150",
+      maxTimeoutSeconds: 30,
+    });
+
+    const api = makeApi();
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    // Auth entry expired at ledger 900, but current ledger is 1000
+    vi.spyOn(utils, "getExpirationLedgersFromAuthEntries").mockReturnValue([
+      900,
+    ]);
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_auth_already_expired",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("rejects auth entry expiration too far in the future", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "150",
+    });
+    // maxTimeoutSeconds=30 means max offset = ceil(30/5) = 6 ledgers
+    // current ledger = 1000, so max allowed = 1006
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "150",
+      maxTimeoutSeconds: 30,
+    });
+
+    const api = makeApi();
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    // Auth entry expires at ledger 1100, which exceeds max of 1006
+    vi.spyOn(utils, "getExpirationLedgersFromAuthEntries").mockReturnValue([
+      1100,
+    ]);
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_auth_expiration_too_far",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("accepts auth entry expiration within allowed window", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "150",
+    });
+    // maxTimeoutSeconds=30 means max offset = ceil(30/5) = 6 ledgers
+    // current ledger = 1000, so max allowed = 1006
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "150",
+      maxTimeoutSeconds: 30,
+    });
+
+    const api = makeApi();
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    // Auth entry expires at ledger 1005, which is within the allowed window
+    vi.spyOn(utils, "getExpirationLedgersFromAuthEntries").mockReturnValue([
+      1005,
+    ]);
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(true);
+    expect(result.payer).toBe("G-PAYER");
   });
 });

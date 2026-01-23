@@ -116,6 +116,7 @@ export function buildPaymentRequirementsV2(
     asset: string;
     payTo: string;
     amount: string;
+    maxTimeoutSeconds: number;
   }> = {},
 ) {
   return {

@@ -8,8 +8,9 @@
  * 4. Validate contract address, recipient, and amount
  * 5. Ensure transaction envelope signatures are empty (relayer rebuilds the tx)
  * 6. Verify auth entries are present and signed by the payer
- * 7. Re-simulate transaction to ensure it will succeed
+ * 7. Validate auth entry expiration is within allowed window
  * 8. Validate transaction source is not the relayer (security check)
+ * 9. Re-simulate transaction to ensure it will succeed
  *
  * Note: For Soroban transactions, signatures are in auth entries, not the envelope.
  * The client signs auth entries which authorize the contract invocation.
@@ -29,6 +30,7 @@ import {
   VerifyResponse,
 } from "../types";
 import {
+  getExpirationLedgersFromAuthEntries,
   getNetworkPassphrase,
   getSignedAddressesFromAuthEntries,
   mapRelayerNetworkToStellar,
@@ -36,6 +38,9 @@ import {
 } from "./utils";
 
 import type { PluginAPI } from "@openzeppelin/relayer-sdk";
+
+// Default estimated ledger time in seconds (Stellar averages ~5-6 seconds per ledger)
+const DEFAULT_ESTIMATED_LEDGER_SECONDS = 5;
 
 type ErrorReason =
   | "invalid_x402_version"
@@ -54,6 +59,8 @@ type ErrorReason =
   | "invalid_exact_stellar_payload_missing_auth_entries"
   | "invalid_exact_stellar_payload_missing_payer_auth"
   | "invalid_exact_stellar_payload_unsigned_auth_entry"
+  | "invalid_exact_stellar_payload_auth_expiration_too_far"
+  | "invalid_exact_stellar_payload_auth_already_expired"
   | "verify_network_mismatch"
   | "unexpected_verify_error"
   | "unsupported_asset";
@@ -278,7 +285,69 @@ export async function verify(
       );
     }
 
-    // 8. Security check: ensure transaction source is not the relayer
+    // 8. Validate auth entry expiration ledgers are within allowed window
+    // Get current ledger from the network
+    const latestLedgerResponse = await relayer.rpc({
+      method: "getLatestLedger",
+      id: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
+      jsonrpc: "2.0",
+      params: {},
+    });
+
+    if (latestLedgerResponse.error || !latestLedgerResponse.result) {
+      console.error("Failed to get latest ledger:", latestLedgerResponse.error);
+      return invalidResponse(
+        "invalid_exact_stellar_payload_simulation_failed",
+        fromAddress,
+      );
+    }
+
+    const currentLedger = (latestLedgerResponse.result as { sequence: number })
+      .sequence;
+
+    // Calculate max allowed expiration: currentLedger + ceil(maxTimeoutSeconds / estimatedLedgerSeconds)
+    const maxTimeoutSeconds = paymentRequirements.maxTimeoutSeconds ?? 30;
+    const maxLedgerOffset = Math.ceil(
+      maxTimeoutSeconds / DEFAULT_ESTIMATED_LEDGER_SECONDS,
+    );
+    const maxAllowedExpiration = currentLedger + maxLedgerOffset;
+
+    // Extract expiration ledgers from auth entries and validate
+    const expirationLedgers = getExpirationLedgersFromAuthEntries(authEntries);
+
+    console.log("Auth entry expiration validation:", {
+      currentLedger,
+      maxTimeoutSeconds,
+      maxLedgerOffset,
+      maxAllowedExpiration,
+      expirationLedgers,
+    });
+
+    for (const expirationLedger of expirationLedgers) {
+      // Check if auth entry has already expired
+      if (expirationLedger <= currentLedger) {
+        console.error(
+          `Auth entry already expired: expiration=${expirationLedger}, current=${currentLedger}`,
+        );
+        return invalidResponse(
+          "invalid_exact_stellar_payload_auth_already_expired",
+          fromAddress,
+        );
+      }
+
+      // Check if auth entry expiration exceeds the allowed window
+      if (expirationLedger > maxAllowedExpiration) {
+        console.error(
+          `Auth entry expiration exceeds allowed window: expiration=${expirationLedger}, max=${maxAllowedExpiration} (current=${currentLedger} + offset=${maxLedgerOffset})`,
+        );
+        return invalidResponse(
+          "invalid_exact_stellar_payload_auth_expiration_too_far",
+          fromAddress,
+        );
+      }
+    }
+
+    // 9. Security check: ensure transaction source is not the relayer
     // This prevents the client from trying to authorize actions on behalf of the relayer
     if (
       operation.source === relayerInfo.address ||
@@ -290,7 +359,7 @@ export async function verify(
       );
     }
 
-    // 9. Re-simulate to ensure transaction will succeed when rebuilt
+    // 10. Re-simulate to ensure transaction will succeed when rebuilt
     const simulateRpcResponse = await relayer.rpc({
       method: "simulateTransaction",
       id: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
