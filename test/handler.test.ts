@@ -120,7 +120,7 @@ describe("handler routing", () => {
     expect((result as any).kinds[0].x402Version).toBe(2);
     expect((result as any).kinds[0].network).toBe("stellar:testnet");
     expect((result as any).kinds[0].scheme).toBe("exact");
-    expect((result as any).kinds[0].extra?.maxLedger).toBe("112"); // includes buffer
+    expect((result as any).kinds[0].extra?.maxLedgerOffset).toBe(12); // offset for client to compute expiration
 
     // signers field
     expect(result).toHaveProperty("signers");
@@ -203,15 +203,13 @@ describe("handler routing", () => {
     );
   });
 
-  test("/supported handles RPC errors gracefully", async () => {
+  test("/supported handles relayer info errors gracefully", async () => {
     const api = {
       useRelayer: () =>
         ({
-          getRelayer: async () => ({
-            network: "testnet",
-            address: "G-RELAYER",
-          }),
-          rpc: async () => ({ error: { message: "RPC error" } }),
+          getRelayer: async () => {
+            throw new Error("Failed to get relayer info");
+          },
         }) as any,
     } as any;
 
@@ -231,11 +229,10 @@ describe("handler routing", () => {
     expect((result as any).kinds).toHaveLength(1);
     expect((result as any).kinds[0].x402Version).toBe(2);
     expect((result as any).kinds[0].network).toBe("stellar:testnet");
-    // maxLedger should be undefined when RPC fails
-    expect((result as any).kinds[0].extra).toEqual({});
-    // signers should still be present even if ledger fetch fails
-    expect(result).toHaveProperty("signers");
-    expect((result as any).signers["stellar:testnet"]).toContain("G-RELAYER");
+    // maxLedgerOffset is a static value, always present for Stellar
+    expect((result as any).kinds[0].extra?.maxLedgerOffset).toBe(12);
+    // signers should be undefined when relayer info fetch fails
+    expect((result as any).signers).toBeUndefined();
   });
 
   test("root route '/' returns info", async () => {

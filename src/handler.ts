@@ -10,11 +10,7 @@
  * - POST /api/v1/plugins/{plugin_id}/call/supported   -> Supported endpoint (route = "/supported")
  */
 
-import {
-  JsonRpcRequestNetworkRpcRequest,
-  PluginAPI,
-  PluginError,
-} from "@openzeppelin/relayer-sdk";
+import { PluginAPI, PluginError } from "@openzeppelin/relayer-sdk";
 import type {
   NetworkConfig,
   PluginContext,
@@ -133,27 +129,8 @@ async function handleSettle(
   }
 }
 
-/**
- * Gets the latest ledger number from the Stellar network
- */
-async function getLatestLedger(
-  api: PluginAPI,
-  relayerId: string,
-): Promise<number> {
-  const relayer = api.useRelayer(relayerId);
-
-  const response = await relayer.rpc({
-    method: "getLatestLedger",
-    id: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
-    jsonrpc: "2.0",
-  } as JsonRpcRequestNetworkRpcRequest);
-
-  if (response.error) {
-    throw new Error(`Failed to get latest ledger: ${response.error.message}`);
-  }
-
-  return response.result.sequence;
-}
+// Maximum ledger offset for Stellar transactions (approximately 1 minute with ~5 second ledger times)
+const STELLAR_MAX_LEDGER_OFFSET = 12;
 
 /**
  * Supported endpoint handler
@@ -163,45 +140,27 @@ async function handleSupported(
   api: PluginAPI,
   config: X402PluginConfig,
 ): Promise<SupportedPaymentKindsResponse> {
-  // Fetch latest ledger and relayer info for each network in parallel
+  // Fetch relayer info for each network in parallel
   const networkPromises = config.networks.map(
     async (networkConfig: NetworkConfig) => {
-      let maxLedger: string | undefined;
       let relayerAddress: string | undefined;
 
-      // For Stellar networks, get the current ledger and add buffer
-      if (networkConfig.type === "stellar") {
-        try {
-          const relayer = api.useRelayer(networkConfig.relayer_id);
-          const relayerInfo = await relayer.getRelayer();
-          relayerAddress = relayerInfo.address;
-
-          const latestLedger = await getLatestLedger(
-            api,
-            networkConfig.relayer_id,
-          );
-          // Add 12 ledgers as buffer (approximately 1 minute on Stellar)
-          maxLedger = (latestLedger + 12).toString();
-        } catch (error) {
-          console.error(
-            `Failed to get latest ledger for ${networkConfig.network}:`,
-            error,
-          );
-          // Fallback: don't include maxLedger if we can't fetch it
-        }
-      } else {
-        // For non-Stellar networks, still get relayer address
-        try {
-          const relayer = api.useRelayer(networkConfig.relayer_id);
-          const relayerInfo = await relayer.getRelayer();
-          relayerAddress = relayerInfo.address;
-        } catch (error) {
-          console.error(
-            `Failed to get relayer info for ${networkConfig.network}:`,
-            error,
-          );
-        }
+      try {
+        const relayer = api.useRelayer(networkConfig.relayer_id);
+        const relayerInfo = await relayer.getRelayer();
+        relayerAddress = relayerInfo.address;
+      } catch (error) {
+        console.error(
+          `Failed to get relayer info for ${networkConfig.network}:`,
+          error,
+        );
       }
+
+      // For Stellar networks, include maxLedgerOffset as a static policy value
+      const extra =
+        networkConfig.type === "stellar"
+          ? { maxLedgerOffset: STELLAR_MAX_LEDGER_OFFSET }
+          : {};
 
       return {
         networkConfig,
@@ -209,7 +168,7 @@ async function handleSupported(
           x402Version: 2 as const,
           scheme: "exact" as const,
           network: networkConfig.network,
-          extra: maxLedger ? { maxLedger } : {},
+          extra,
         },
         relayerAddress,
       };
