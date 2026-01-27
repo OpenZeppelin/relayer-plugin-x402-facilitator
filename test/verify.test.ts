@@ -181,11 +181,11 @@ describe("stellar verify", () => {
     });
     const payload = buildPaymentPayloadV2(tx, {
       payTo: "G-PAYEE",
-      amount: "150",
+      amount: "200",
     });
     const reqs = buildPaymentRequirementsV2({
       payTo: "G-PAYEE",
-      amount: "150",
+      amount: "200",
     });
 
     const api = makeApi();
@@ -323,11 +323,11 @@ describe("stellar verify", () => {
     });
     const payload = buildPaymentPayloadV2(tx, {
       payTo: "G-PAYEE",
-      amount: "150",
+      amount: "200",
     });
     const reqs = buildPaymentRequirementsV2({
       payTo: "G-PAYEE",
-      amount: "150",
+      amount: "200",
     });
 
     const api = makeApi();
@@ -352,11 +352,11 @@ describe("stellar verify", () => {
     });
     const payload = buildPaymentPayloadV2(tx, {
       payTo: "G-PAYEE",
-      amount: "150",
+      amount: "200",
     });
     const reqs = buildPaymentRequirementsV2({
       payTo: "G-PAYEE",
-      amount: "150",
+      amount: "200",
     });
 
     const api = makeApi();
@@ -449,11 +449,11 @@ describe("stellar verify", () => {
     });
     const payload = buildPaymentPayloadV2(tx, {
       payTo: "G-PAYEE",
-      amount: "150",
+      amount: "200",
     });
     const reqs = buildPaymentRequirementsV2({
       payTo: "G-PAYEE",
-      amount: "150",
+      amount: "200",
       maxTimeoutSeconds: 30,
     });
 
@@ -462,10 +462,13 @@ describe("stellar verify", () => {
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    // Auth entry expired at ledger 900, but current ledger is 1000
-    vi.spyOn(utils, "getExpirationLedgersFromAuthEntries").mockReturnValue([
-      900,
-    ]);
+    vi.spyOn(utils, "validateFacilitatorNotInAuth").mockReturnValue(null);
+    // Mock validateAuthEntryExpirations to return auth already expired error
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: false,
+      error: "invalid_exact_stellar_payload_auth_already_expired",
+      currentLedger: 1000,
+    });
 
     const result = await verify(
       { paymentPayload: payload, paymentRequirements: reqs } as any,
@@ -488,13 +491,13 @@ describe("stellar verify", () => {
     });
     const payload = buildPaymentPayloadV2(tx, {
       payTo: "G-PAYEE",
-      amount: "150",
+      amount: "200",
     });
     // maxTimeoutSeconds=30 means max offset = ceil(30/5) = 6 ledgers
     // current ledger = 1000, so max allowed = 1006
     const reqs = buildPaymentRequirementsV2({
       payTo: "G-PAYEE",
-      amount: "150",
+      amount: "200",
       maxTimeoutSeconds: 30,
     });
 
@@ -503,10 +506,13 @@ describe("stellar verify", () => {
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    // Auth entry expires at ledger 1100, which exceeds max of 1006
-    vi.spyOn(utils, "getExpirationLedgersFromAuthEntries").mockReturnValue([
-      1100,
-    ]);
+    vi.spyOn(utils, "validateFacilitatorNotInAuth").mockReturnValue(null);
+    // Mock validateAuthEntryExpirations to return expiration too far error
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: false,
+      error: "invalid_exact_stellar_payload_auth_expiration_too_far",
+      currentLedger: 1000,
+    });
 
     const result = await verify(
       { paymentPayload: payload, paymentRequirements: reqs } as any,
@@ -529,13 +535,13 @@ describe("stellar verify", () => {
     });
     const payload = buildPaymentPayloadV2(tx, {
       payTo: "G-PAYEE",
-      amount: "150",
+      amount: "200",
     });
     // maxTimeoutSeconds=30 means max offset = ceil(30/5) = 6 ledgers
     // current ledger = 1000, so max allowed = 1006
     const reqs = buildPaymentRequirementsV2({
       payTo: "G-PAYEE",
-      amount: "150",
+      amount: "200",
       maxTimeoutSeconds: 30,
     });
 
