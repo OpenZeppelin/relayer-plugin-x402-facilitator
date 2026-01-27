@@ -95,7 +95,7 @@ export async function verify(
     // 1. Validate protocol version - only v2 is supported
     if (paymentPayload.x402Version !== 2) {
       return invalidResponse(
-        "invalid_x402_version - only x402 v2 is supported. For v1 support, please use a previous version of this facilitator.",
+        "invalid_x402_version - only x402 v2 is supported.",
       );
     }
 
