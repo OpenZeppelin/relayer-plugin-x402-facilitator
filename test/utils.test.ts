@@ -7,7 +7,7 @@ describe("utils", () => {
   const config: X402PluginConfig = {
     networks: [
       {
-        network: "stellar-testnet",
+        network: "stellar:testnet",
         type: "stellar",
         relayer_id: "relayer-1",
         assets: ["ASSET1"],
@@ -23,9 +23,9 @@ describe("utils", () => {
 
   describe("getNetworkConfigByNetwork", () => {
     test("returns network config when found", () => {
-      const result = getNetworkConfigByNetwork(config, "stellar-testnet");
+      const result = getNetworkConfigByNetwork(config, "stellar:testnet");
       expect(result).toBeDefined();
-      expect(result?.network).toBe("stellar-testnet");
+      expect(result?.network).toBe("stellar:testnet");
       expect(result?.relayer_id).toBe("relayer-1");
     });
 
@@ -36,7 +36,7 @@ describe("utils", () => {
 
     test("handles empty networks array", () => {
       const emptyConfig: X402PluginConfig = { networks: [] };
-      const result = getNetworkConfigByNetwork(emptyConfig, "stellar-testnet");
+      const result = getNetworkConfigByNetwork(emptyConfig, "stellar:testnet");
       expect(result).toBeUndefined();
     });
 
@@ -44,13 +44,13 @@ describe("utils", () => {
       const duplicateConfig: X402PluginConfig = {
         networks: [
           {
-            network: "stellar-testnet",
+            network: "stellar:testnet",
             type: "stellar",
             relayer_id: "relayer-1",
             assets: ["ASSET1"],
           },
           {
-            network: "stellar-testnet",
+            network: "stellar:testnet",
             type: "stellar",
             relayer_id: "relayer-2",
             assets: ["ASSET2"],
@@ -59,7 +59,7 @@ describe("utils", () => {
       };
       const result = getNetworkConfigByNetwork(
         duplicateConfig,
-        "stellar-testnet",
+        "stellar:testnet",
       );
       expect(result?.relayer_id).toBe("relayer-1");
     });

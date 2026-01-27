@@ -2,6 +2,8 @@
 
 OpenZeppelin Relayer plugin that implements the x402 facilitator API so you can serve x402 payments directly from a Relayer instance. Works with the Coinbase x402 ecosystem (e.g., `x402-express`) and exposes the expected `/verify`, `/settle`, and `/supported` endpoints under the Relayer plugin router.
 
+**This version supports x402 v2 specification.** For x402 v1 support, please use a previous version of this plugin (check git history for v1-compatible releases).
+
 ## What you get
 
 - x402 facilitator API implemented as a Relayer plugin (Stellar support today)
@@ -57,7 +59,7 @@ export { handler } from "@openzeppelin/relayer-plugin-x402-facilitator";
       "config": {
         "networks": [
           {
-            "network": "stellar-testnet",
+            "network": "stellar:testnet",
             "type": "stellar",
             "relayer_id": "stellar-example",
             "assets": [
@@ -75,7 +77,7 @@ export { handler } from "@openzeppelin/relayer-plugin-x402-facilitator";
 
 Each object in `config.networks`:
 
-- `network`: x402 network identifier (e.g., `stellar-testnet`)
+- `network`: x402 network identifier (e.g., `stellar:testnet`)
 - `type`: `"stellar"` (current support)
 - `relayer_id`: ID of the Relayer account to use for this network
 - `assets`: list of allowed assets (issuer addresses for Stellar)
@@ -86,9 +88,38 @@ Each object in `config.networks`:
 All routes hang off the Relayer plugin call endpoint: `POST /api/v1/plugins/{plugin_id}/call{route}`.
 
 - `/` or ``: info
-- `/verify`: x402 verify
-- `/settle`: x402 settle
-- `/supported`: discovery of supported payment kinds
+- `/verify`: x402 v2 verify
+- `/settle`: x402 v2 settle
+- `/supported`: discovery of supported payment kinds (returns v2 format)
+
+### x402 v2 Specification
+
+This plugin implements the x402 v2 specification, which includes:
+
+- **PaymentPayload v2**: Uses `accepted` field instead of top-level `scheme` and `network`
+- **PaymentRequirements v2**: Uses `amount` instead of `maxAmountRequired`, removed `resource`/`description`/`mimeType` (moved to top-level `PaymentRequired`)
+- **Supported endpoint v2**: Returns version-grouped `kinds`, `signers`, and `extensions` fields
+
+The `/supported` endpoint returns data in the following v2 format:
+
+```json
+{
+  "kinds": [
+    {
+      "x402Version": 2,
+      "scheme": "exact",
+      "network": "stellar:testnet",
+      "extra": {
+        "maxLedgerOffset": 12
+      }
+    }
+  ],
+  "signers": {
+    "stellar:testnet": ["G-RELAYER-ADDRESS"]
+  },
+  "extensions": []
+}
+```
 
 ## Using with x402 packages (e.g., x402-express)
 
@@ -98,7 +129,7 @@ Point the facilitator to your Relayer plugin URL and pass the Relayer API key vi
 import { paymentMiddleware } from "x402-express";
 
 const facilitatorUrl = "https://your-relayer-host/api/v1/plugins/x402/call";
-const network = "stellar-testnet";
+const network = "stellar:testnet";
 const payTo = "G..."; // Payment receiver G address
 
 app.use(

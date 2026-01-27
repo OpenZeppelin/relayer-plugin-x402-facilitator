@@ -8,8 +8,9 @@
  * 4. Validate contract address, recipient, and amount
  * 5. Ensure transaction envelope signatures are empty (relayer rebuilds the tx)
  * 6. Verify auth entries are present and signed by the payer
- * 7. Re-simulate transaction to ensure it will succeed
+ * 7. Validate auth entry expiration is within allowed window
  * 8. Validate transaction source is not the relayer (security check)
+ * 9. Re-simulate transaction to ensure it will succeed
  *
  * Note: For Soroban transactions, signatures are in auth entries, not the envelope.
  * The client signs auth entries which authorize the contract invocation.
@@ -32,6 +33,10 @@ import {
   getNetworkPassphrase,
   getSignedAddressesFromAuthEntries,
   mapRelayerNetworkToStellar,
+  networksMatch,
+  validateAuthEntryExpirations,
+  validateFacilitatorNotInAuth,
+  validateSimulationEvents,
 } from "./utils";
 
 import type { PluginAPI } from "@openzeppelin/relayer-sdk";
@@ -49,10 +54,15 @@ type ErrorReason =
   | "invalid_exact_stellar_payload_wrong_amount"
   | "invalid_exact_stellar_payload_simulation_failed"
   | "invalid_exact_stellar_payload_unsafe_tx_or_op_source"
+  | "invalid_exact_stellar_payload_unsafe_from_address"
+  | "invalid_exact_stellar_payload_facilitator_in_auth"
+  | "invalid_exact_stellar_payload_unexpected_balance_changes"
   | "invalid_exact_stellar_payload_has_envelope_signatures"
   | "invalid_exact_stellar_payload_missing_auth_entries"
   | "invalid_exact_stellar_payload_missing_payer_auth"
   | "invalid_exact_stellar_payload_unsigned_auth_entry"
+  | "invalid_exact_stellar_payload_auth_expiration_too_far"
+  | "invalid_exact_stellar_payload_auth_already_expired"
   | "verify_network_mismatch"
   | "unexpected_verify_error"
   | "unsupported_asset";
@@ -82,18 +92,34 @@ export async function verify(
   try {
     const { paymentPayload, paymentRequirements } = params;
 
-    // 1. Validate protocol version, scheme, and network
-    if (paymentPayload.x402Version !== 1) {
-      return invalidResponse("invalid_x402_version");
+    // 1. Validate protocol version - only v2 is supported
+    if (paymentPayload.x402Version !== 2) {
+      return invalidResponse(
+        "invalid_x402_version - only x402 v2 is supported.",
+      );
     }
 
-    if (paymentPayload.scheme !== "exact") {
+    // Extract scheme and network from accepted field
+    if (!paymentPayload.accepted) {
+      return invalidResponse("invalid_x402_version - missing accepted field");
+    }
+
+    const scheme = paymentPayload.accepted.scheme;
+    const network = paymentPayload.accepted.network;
+
+    if (scheme !== "exact") {
       return invalidResponse("invalid_scheme");
     }
 
+    // Validate requirements.scheme is also "exact"
+    if (paymentRequirements.scheme !== "exact") {
+      return invalidResponse("invalid_scheme");
+    }
+
+    // Validate network matches between accepted, requirements, and config
     if (
-      paymentPayload.network !== paymentRequirements.network ||
-      paymentPayload.network !== networkConfig.network
+      !networksMatch(network, paymentRequirements.network) ||
+      !networksMatch(network, networkConfig.network)
     ) {
       return invalidResponse("invalid_network");
     }
@@ -108,7 +134,7 @@ export async function verify(
     const relayerInfo = await relayer.getRelayer();
     const mappedNetwork = mapRelayerNetworkToStellar(relayerInfo.network);
 
-    if (mappedNetwork !== networkConfig.network) {
+    if (!networksMatch(mappedNetwork, networkConfig.network)) {
       console.error(
         `Relayer network mismatch: ${relayerInfo.network} (${mappedNetwork}) !== ${networkConfig.network}`,
       );
@@ -187,6 +213,18 @@ export async function verify(
     const toAddress = scValToNative(args[1]) as string;
     const amount = scValToNative(args[2]) as bigint;
 
+    // Security check: facilitator MUST NOT be the from address in the transfer
+    // This prevents the facilitator from being tricked into transferring their own funds
+    if (relayerInfo.address && fromAddress === relayerInfo.address) {
+      console.error(
+        `Security violation: from address is the facilitator: ${fromAddress}`,
+      );
+      return invalidResponse(
+        "invalid_exact_stellar_payload_unsafe_from_address",
+        fromAddress,
+      );
+    }
+
     if (toAddress !== paymentRequirements.payTo) {
       return invalidResponse(
         "invalid_exact_stellar_payload_wrong_recipient",
@@ -194,8 +232,15 @@ export async function verify(
       );
     }
 
-    const requiredAmount = BigInt(paymentRequirements.maxAmountRequired);
-    if (amount < requiredAmount) {
+    // Validate amount (v2 uses amount field)
+    if (!paymentRequirements.amount) {
+      return invalidResponse(
+        "invalid_exact_stellar_payload_wrong_amount - missing amount",
+        fromAddress,
+      );
+    }
+    const requiredAmount = BigInt(paymentRequirements.amount);
+    if (amount !== requiredAmount) {
       return invalidResponse(
         "invalid_exact_stellar_payload_wrong_amount",
         fromAddress,
@@ -259,7 +304,27 @@ export async function verify(
       );
     }
 
-    // 8. Security check: ensure transaction source is not the relayer
+    // Security check: facilitator address MUST NOT appear in any authorization entries
+    const facilitatorError = validateFacilitatorNotInAuth(
+      authEntries,
+      relayerInfo.address,
+    );
+    if (facilitatorError) {
+      return invalidResponse(facilitatorError, fromAddress);
+    }
+
+    // 8. Validate auth entry expiration ledgers are within allowed window
+    const maxTimeoutSeconds = paymentRequirements.maxTimeoutSeconds ?? 30;
+    const expirationResult = await validateAuthEntryExpirations(
+      authEntries,
+      relayer,
+      maxTimeoutSeconds,
+    );
+    if (!expirationResult.isValid) {
+      return invalidResponse(expirationResult.error!, fromAddress);
+    }
+
+    // 9. Security check: ensure transaction source is not the relayer
     // This prevents the client from trying to authorize actions on behalf of the relayer
     if (
       operation.source === relayerInfo.address ||
@@ -271,7 +336,7 @@ export async function verify(
       );
     }
 
-    // 9. Re-simulate to ensure transaction will succeed when rebuilt
+    // 10. Re-simulate to ensure transaction will succeed when rebuilt
     const simulateRpcResponse = await relayer.rpc({
       method: "simulateTransaction",
       id: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
@@ -297,6 +362,38 @@ export async function verify(
         "invalid_exact_stellar_payload_simulation_failed",
         fromAddress,
       );
+    }
+
+    // 11. Validate simulation events show only expected balance changes
+    // Must emit events showing only the expected balance changes
+    // (recipient increase, payer decrease) for requirements.amount
+    const simulationEvents =
+      (simulateResponse as rpc.Api.SimulateTransactionSuccessResponse).events ||
+      [];
+
+    if (simulationEvents.length === 0) {
+      console.warn(
+        "No events in simulation response - skipping event validation",
+      );
+    } else {
+      const eventValidation = validateSimulationEvents(
+        simulationEvents,
+        paymentRequirements.asset, // token contract
+        fromAddress, // payer
+        paymentRequirements.payTo, // recipient
+        requiredAmount, // exact amount
+      );
+
+      if (!eventValidation.isValid) {
+        console.error(
+          "Simulation event validation failed:",
+          eventValidation.error,
+        );
+        return invalidResponse(
+          "invalid_exact_stellar_payload_unexpected_balance_changes",
+          fromAddress,
+        );
+      }
     }
 
     console.log("Verification successful for payer:", fromAddress);

@@ -82,7 +82,7 @@ export function buildPaymentRequirements(
 ) {
   return {
     scheme: "exact",
-    network: "stellar-testnet",
+    network: "stellar:testnet",
     maxAmountRequired: "100",
     resource: "/resource",
     description: "test",
@@ -101,10 +101,56 @@ export function buildPaymentPayload(
   return {
     x402Version: 1,
     scheme: "exact",
-    network: "stellar-testnet",
+    network: "stellar:testnet",
     payload: {
       transaction: txBase64,
     },
     ...overrides,
+  };
+}
+
+export function buildPaymentRequirementsV2(
+  overrides: Partial<{
+    scheme: string;
+    network: string;
+    asset: string;
+    payTo: string;
+    amount: string;
+    maxTimeoutSeconds: number;
+  }> = {},
+) {
+  return {
+    scheme: "exact",
+    network: "stellar:testnet",
+    amount: "100",
+    payTo: "G-PAYEE",
+    maxTimeoutSeconds: 30,
+    asset: "ASSET_CONTRACT",
+    ...overrides,
+  };
+}
+
+export function buildPaymentPayloadV2(
+  txBase64: string,
+  acceptedOverrides: Partial<{
+    scheme: string;
+    network: string;
+    asset: string;
+    payTo: string;
+    amount: string;
+  }> = {},
+  payloadOverrides: Partial<{
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    extensions?: Record<string, any>;
+  }> = {},
+) {
+  const accepted = buildPaymentRequirementsV2(acceptedOverrides);
+  return {
+    x402Version: 2,
+    accepted,
+    payload: {
+      transaction: txBase64,
+    },
+    ...payloadOverrides,
   };
 }

@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   buildInvokeTxBase64,
   buildPaymentPayload,
+  buildPaymentPayloadV2,
   buildPaymentRequirements,
+  buildPaymentRequirementsV2,
 } from "./helpers/payload";
 
 import { settle } from "../src/stellar/settle";
@@ -60,7 +62,7 @@ vi.mock("@stellar/stellar-sdk", () => {
 });
 
 const baseNetworkConfig = {
-  network: "stellar-testnet",
+  network: "stellar:testnet",
   type: "stellar" as const,
   relayer_id: "relayer-1",
   assets: ["ASSET_CONTRACT"],
@@ -103,8 +105,8 @@ describe("stellar settle", () => {
 
     const tx = buildInvokeTxBase64();
     const params = {
-      paymentPayload: buildPaymentPayload(tx),
-      paymentRequirements: buildPaymentRequirements(),
+      paymentPayload: buildPaymentPayloadV2(tx),
+      paymentRequirements: buildPaymentRequirementsV2(),
     };
 
     const result = await settle(params as any, api, baseNetworkConfig);
@@ -112,7 +114,7 @@ describe("stellar settle", () => {
     expect(result.errorReason).toBe("settle_exact_stellar_network_mismatch");
   });
 
-  test("settles via relayer when channel service not configured", async () => {
+  test("settles via relayer when channel service not configured (v2)", async () => {
     const verifySpy = vi.spyOn(verifyModule, "verify").mockResolvedValue({
       isValid: true,
       payer: "G-PAYER",
@@ -127,8 +129,8 @@ describe("stellar settle", () => {
 
     const tx = buildInvokeTxBase64();
     const params = {
-      paymentPayload: buildPaymentPayload(tx),
-      paymentRequirements: buildPaymentRequirements(),
+      paymentPayload: buildPaymentPayloadV2(tx),
+      paymentRequirements: buildPaymentRequirementsV2(),
     };
 
     const result = await settle(params as any, api, baseNetworkConfig);
@@ -163,8 +165,8 @@ describe("stellar settle", () => {
 
     const tx = buildInvokeTxBase64();
     const params = {
-      paymentPayload: buildPaymentPayload(tx),
-      paymentRequirements: buildPaymentRequirements(),
+      paymentPayload: buildPaymentPayloadV2(tx),
+      paymentRequirements: buildPaymentRequirementsV2(),
     };
 
     const result = await settle(params as any, makeApi(), networkConfig);
@@ -183,8 +185,8 @@ describe("stellar settle", () => {
 
     const tx = buildInvokeTxBase64();
     const params = {
-      paymentPayload: buildPaymentPayload(tx),
-      paymentRequirements: buildPaymentRequirements(),
+      paymentPayload: buildPaymentPayloadV2(tx),
+      paymentRequirements: buildPaymentRequirementsV2(),
     };
 
     const result = await settle(params as any, makeApi(), baseNetworkConfig);
@@ -215,8 +217,8 @@ describe("stellar settle", () => {
 
     const tx = buildInvokeTxBase64();
     const params = {
-      paymentPayload: buildPaymentPayload(tx),
-      paymentRequirements: buildPaymentRequirements(),
+      paymentPayload: buildPaymentPayloadV2(tx),
+      paymentRequirements: buildPaymentRequirementsV2(),
     };
 
     const result = await settle(params as any, makeApi(), networkConfig);
@@ -242,8 +244,8 @@ describe("stellar settle", () => {
 
     const tx = buildInvokeTxBase64();
     const params = {
-      paymentPayload: buildPaymentPayload(tx),
-      paymentRequirements: buildPaymentRequirements(),
+      paymentPayload: buildPaymentPayloadV2(tx),
+      paymentRequirements: buildPaymentRequirementsV2(),
     };
 
     const result = await settle(params as any, api, baseNetworkConfig);

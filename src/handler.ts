@@ -10,11 +10,7 @@
  * - POST /api/v1/plugins/{plugin_id}/call/supported   -> Supported endpoint (route = "/supported")
  */
 
-import {
-  JsonRpcRequestNetworkRpcRequest,
-  PluginAPI,
-  PluginError,
-} from "@openzeppelin/relayer-sdk";
+import { PluginAPI, PluginError } from "@openzeppelin/relayer-sdk";
 import type {
   NetworkConfig,
   PluginContext,
@@ -133,69 +129,79 @@ async function handleSettle(
   }
 }
 
-/**
- * Gets the latest ledger number from the Stellar network
- */
-async function getLatestLedger(
-  api: PluginAPI,
-  relayerId: string,
-): Promise<number> {
-  const relayer = api.useRelayer(relayerId);
-
-  const response = await relayer.rpc({
-    method: "getLatestLedger",
-    id: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
-    jsonrpc: "2.0",
-  } as JsonRpcRequestNetworkRpcRequest);
-
-  if (response.error) {
-    throw new Error(`Failed to get latest ledger: ${response.error.message}`);
-  }
-
-  return response.result.sequence;
-}
+// Maximum ledger offset for Stellar transactions (approximately 1 minute with ~5 second ledger times)
+const STELLAR_MAX_LEDGER_OFFSET = 12;
 
 /**
  * Supported endpoint handler
- * Returns supported payment kinds with current max ledger for each network
+ * Returns supported payment kinds in v2 format with version-grouped kinds, signers, and extensions
  */
 async function handleSupported(
   api: PluginAPI,
   config: X402PluginConfig,
 ): Promise<SupportedPaymentKindsResponse> {
-  // Fetch latest ledger for each Stellar network in parallel
-  const kindsPromises = config.networks.map(
+  // Fetch relayer info for each network in parallel
+  const networkPromises = config.networks.map(
     async (networkConfig: NetworkConfig) => {
-      let maxLedger: string | undefined;
+      let relayerAddress: string | undefined;
 
-      // For Stellar networks, get the current ledger and add buffer
-      if (networkConfig.type === "stellar") {
-        try {
-          const latestLedger = await getLatestLedger(
-            api,
-            networkConfig.relayer_id,
-          );
-          // Add 12 ledgers as buffer (approximately 1 minute on Stellar)
-          maxLedger = (latestLedger + 12).toString();
-        } catch (error) {
-          console.error(
-            `Failed to get latest ledger for ${networkConfig.network}:`,
-            error,
-          );
-          // Fallback: don't include maxLedger if we can't fetch it
-        }
+      try {
+        const relayer = api.useRelayer(networkConfig.relayer_id);
+        const relayerInfo = await relayer.getRelayer();
+        relayerAddress = relayerInfo.address;
+      } catch (error) {
+        console.error(
+          `Failed to get relayer info for ${networkConfig.network}:`,
+          error,
+        );
       }
 
+      // For Stellar networks, include maxLedgerOffset as a static policy value
+      const extra =
+        networkConfig.type === "stellar"
+          ? { maxLedgerOffset: STELLAR_MAX_LEDGER_OFFSET }
+          : {};
+
       return {
-        x402Version: 1 as const,
-        scheme: "exact" as const,
-        network: networkConfig.network,
-        extra: maxLedger ? { maxLedger } : {},
+        networkConfig,
+        kind: {
+          x402Version: 2 as const,
+          scheme: "exact" as const,
+          network: networkConfig.network,
+          extra,
+        },
+        relayerAddress,
       };
     },
   );
 
-  const kinds = await Promise.all(kindsPromises);
+  const networkResults = await Promise.all(networkPromises);
 
-  return { kinds };
+  // Build kinds array with version included in each kind
+  const kinds = networkResults.map((result) => result.kind);
+
+  // Build signers map: group by network pattern
+  // For now, we'll use exact network matches, but could support wildcards like "stellar:*"
+  const signers: { [networkPattern: string]: string[] } = {};
+  for (const result of networkResults) {
+    if (result.relayerAddress) {
+      const networkPattern = result.networkConfig.network;
+      if (!signers[networkPattern]) {
+        signers[networkPattern] = [];
+      }
+      if (!signers[networkPattern].includes(result.relayerAddress)) {
+        signers[networkPattern].push(result.relayerAddress);
+      }
+    }
+  }
+
+  // Extensions supported by this facilitator
+  // Currently empty, but can be extended in the future (e.g., ["discovery"])
+  const extensions: string[] = [];
+
+  return {
+    kinds,
+    signers: Object.keys(signers).length > 0 ? signers : undefined,
+    extensions: extensions.length > 0 ? extensions : undefined,
+  };
 }

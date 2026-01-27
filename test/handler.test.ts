@@ -9,7 +9,7 @@ import { handler } from "../src/handler";
 const networkConfig = {
   networks: [
     {
-      network: "stellar-testnet",
+      network: "stellar:testnet",
       type: "stellar",
       relayer_id: "relayer-1",
       assets: ["ASSET_CONTRACT"],
@@ -17,10 +17,14 @@ const networkConfig = {
   ],
 };
 
-function createApiWithLedger(sequence: number): PluginAPI {
+function createApiWithLedger(sequence: number, address?: string): PluginAPI {
   return {
     useRelayer: () =>
       ({
+        getRelayer: async () => ({
+          network: "testnet",
+          address: address || "RELAYER_ADDR",
+        }),
         rpc: async () => ({ result: { sequence } }),
       }) as any,
   } as any;
@@ -55,8 +59,8 @@ describe("handler routing", () => {
     const result = await handler({
       route: "/verify",
       params: {
-        paymentRequirements: { network: "stellar-testnet" },
-        paymentPayload: { network: "stellar-testnet" },
+        paymentRequirements: { network: "stellar:testnet" },
+        paymentPayload: { network: "stellar:testnet" },
       },
       api: {} as any,
       config: networkConfig,
@@ -75,14 +79,14 @@ describe("handler routing", () => {
     const settleSpy = vi.spyOn(stellarSettle, "settle").mockResolvedValue({
       success: true,
       transaction: "TX",
-      network: "stellar-testnet",
+      network: "stellar:testnet",
     });
 
     const result = await handler({
       route: "/settle",
       params: {
-        paymentRequirements: { network: "stellar-testnet" },
-        paymentPayload: { network: "stellar-testnet" },
+        paymentRequirements: { network: "stellar:testnet" },
+        paymentPayload: { network: "stellar:testnet" },
       },
       api: {} as any,
       config: networkConfig,
@@ -97,8 +101,8 @@ describe("handler routing", () => {
     expect((result as any).success).toBe(true);
   });
 
-  test("/supported returns kinds with maxLedger buffer", async () => {
-    const api = createApiWithLedger(100);
+  test("/supported returns kinds array with signers and extensions", async () => {
+    const api = createApiWithLedger(100, "G-RELAYER123");
     const result = await handler({
       route: "/supported",
       params: {},
@@ -111,9 +115,22 @@ describe("handler routing", () => {
     } as any);
 
     expect(result).toHaveProperty("kinds");
+    // kinds is a flat array with x402Version in each item
     expect((result as any).kinds).toHaveLength(1);
-    expect((result as any).kinds[0].network).toBe("stellar-testnet");
-    expect((result as any).kinds[0].extra?.maxLedger).toBe("112"); // includes buffer
+    expect((result as any).kinds[0].x402Version).toBe(2);
+    expect((result as any).kinds[0].network).toBe("stellar:testnet");
+    expect((result as any).kinds[0].scheme).toBe("exact");
+    expect((result as any).kinds[0].extra?.maxLedgerOffset).toBe(12); // offset for client to compute expiration
+
+    // signers field
+    expect(result).toHaveProperty("signers");
+    expect((result as any).signers).toHaveProperty("stellar:testnet");
+    expect((result as any).signers["stellar:testnet"]).toContain(
+      "G-RELAYER123",
+    );
+
+    // extensions field (may be undefined if empty)
+    expect(result).toHaveProperty("extensions");
   });
 
   test("unknown route returns 404 error", async () => {
@@ -186,11 +203,13 @@ describe("handler routing", () => {
     );
   });
 
-  test("/supported handles RPC errors gracefully", async () => {
+  test("/supported handles relayer info errors gracefully", async () => {
     const api = {
       useRelayer: () =>
         ({
-          rpc: async () => ({ error: { message: "RPC error" } }),
+          getRelayer: async () => {
+            throw new Error("Failed to get relayer info");
+          },
         }) as any,
     } as any;
 
@@ -206,10 +225,14 @@ describe("handler routing", () => {
     } as any);
 
     expect(result).toHaveProperty("kinds");
+    // kinds is a flat array
     expect((result as any).kinds).toHaveLength(1);
-    expect((result as any).kinds[0].network).toBe("stellar-testnet");
-    // maxLedger should be undefined when RPC fails
-    expect((result as any).kinds[0].extra).toEqual({});
+    expect((result as any).kinds[0].x402Version).toBe(2);
+    expect((result as any).kinds[0].network).toBe("stellar:testnet");
+    // maxLedgerOffset is a static value, always present for Stellar
+    expect((result as any).kinds[0].extra?.maxLedgerOffset).toBe(12);
+    // signers should be undefined when relayer info fetch fails
+    expect((result as any).signers).toBeUndefined();
   });
 
   test("root route '/' returns info", async () => {
