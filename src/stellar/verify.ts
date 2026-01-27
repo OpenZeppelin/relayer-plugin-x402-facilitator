@@ -30,18 +30,16 @@ import {
   VerifyResponse,
 } from "../types";
 import {
-  getAllAddressesFromAuthEntries,
-  getExpirationLedgersFromAuthEntries,
   getNetworkPassphrase,
   getSignedAddressesFromAuthEntries,
   mapRelayerNetworkToStellar,
   networksMatch,
+  validateAuthEntryExpirations,
+  validateFacilitatorNotInAuth,
+  validateSimulationEvents,
 } from "./utils";
 
 import type { PluginAPI } from "@openzeppelin/relayer-sdk";
-
-// Default estimated ledger time in seconds (Stellar averages ~5-6 seconds per ledger)
-const DEFAULT_ESTIMATED_LEDGER_SECONDS = 5;
 
 type ErrorReason =
   | "invalid_x402_version"
@@ -242,7 +240,7 @@ export async function verify(
       );
     }
     const requiredAmount = BigInt(paymentRequirements.amount);
-    if (amount < requiredAmount) {
+    if (amount !== requiredAmount) {
       return invalidResponse(
         "invalid_exact_stellar_payload_wrong_amount",
         fromAddress,
@@ -307,81 +305,23 @@ export async function verify(
     }
 
     // Security check: facilitator address MUST NOT appear in any authorization entries
-    // This prevents the facilitator from being tricked into authorizing unintended actions
-    const allAuthAddresses = getAllAddressesFromAuthEntries(authEntries);
-    if (
-      relayerInfo.address &&
-      allAuthAddresses.includes(relayerInfo.address)
-    ) {
-      console.error(
-        `Security violation: facilitator address ${relayerInfo.address} found in auth entries`,
-      );
-      return invalidResponse(
-        "invalid_exact_stellar_payload_facilitator_in_auth",
-        fromAddress,
-      );
+    const facilitatorError = validateFacilitatorNotInAuth(
+      authEntries,
+      relayerInfo.address,
+    );
+    if (facilitatorError) {
+      return invalidResponse(facilitatorError, fromAddress);
     }
 
     // 8. Validate auth entry expiration ledgers are within allowed window
-    // Get current ledger from the network
-    const latestLedgerResponse = await relayer.rpc({
-      method: "getLatestLedger",
-      id: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
-      jsonrpc: "2.0",
-      params: {},
-    });
-
-    if (latestLedgerResponse.error || !latestLedgerResponse.result) {
-      console.error("Failed to get latest ledger:", latestLedgerResponse.error);
-      return invalidResponse(
-        "invalid_exact_stellar_payload_simulation_failed",
-        fromAddress,
-      );
-    }
-
-    const currentLedger = (latestLedgerResponse.result as { sequence: number })
-      .sequence;
-
-    // Calculate max allowed expiration: currentLedger + ceil(maxTimeoutSeconds / estimatedLedgerSeconds)
     const maxTimeoutSeconds = paymentRequirements.maxTimeoutSeconds ?? 30;
-    const maxLedgerOffset = Math.ceil(
-      maxTimeoutSeconds / DEFAULT_ESTIMATED_LEDGER_SECONDS,
-    );
-    const maxAllowedExpiration = currentLedger + maxLedgerOffset;
-
-    // Extract expiration ledgers from auth entries and validate
-    const expirationLedgers = getExpirationLedgersFromAuthEntries(authEntries);
-
-    console.log("Auth entry expiration validation:", {
-      currentLedger,
+    const expirationResult = await validateAuthEntryExpirations(
+      authEntries,
+      relayer,
       maxTimeoutSeconds,
-      maxLedgerOffset,
-      maxAllowedExpiration,
-      expirationLedgers,
-    });
-
-    for (const expirationLedger of expirationLedgers) {
-      // Check if auth entry has already expired
-      if (expirationLedger <= currentLedger) {
-        console.error(
-          `Auth entry already expired: expiration=${expirationLedger}, current=${currentLedger}`,
-        );
-        return invalidResponse(
-          "invalid_exact_stellar_payload_auth_already_expired",
-          fromAddress,
-        );
-      }
-
-      // Check if auth entry expiration exceeds the allowed window
-      if (expirationLedger > maxAllowedExpiration) {
-        console.error(
-          `Auth entry expiration exceeds allowed window: expiration=${expirationLedger}, max=${maxAllowedExpiration} (current=${currentLedger} + offset=${maxLedgerOffset})`,
-        );
-        return invalidResponse(
-          "invalid_exact_stellar_payload_auth_expiration_too_far",
-          fromAddress,
-        );
-      }
+    );
+    if (!expirationResult.isValid) {
+      return invalidResponse(expirationResult.error!, fromAddress);
     }
 
     // 9. Security check: ensure transaction source is not the relayer
@@ -422,6 +362,38 @@ export async function verify(
         "invalid_exact_stellar_payload_simulation_failed",
         fromAddress,
       );
+    }
+
+    // 11. Validate simulation events show only expected balance changes
+    // Must emit events showing only the expected balance changes
+    // (recipient increase, payer decrease) for requirements.amount
+    const simulationEvents =
+      (simulateResponse as rpc.Api.SimulateTransactionSuccessResponse).events ||
+      [];
+
+    if (simulationEvents.length === 0) {
+      console.warn(
+        "No events in simulation response - skipping event validation",
+      );
+    } else {
+      const eventValidation = validateSimulationEvents(
+        simulationEvents,
+        paymentRequirements.asset, // token contract
+        fromAddress, // payer
+        paymentRequirements.payTo, // recipient
+        requiredAmount, // exact amount
+      );
+
+      if (!eventValidation.isValid) {
+        console.error(
+          "Simulation event validation failed:",
+          eventValidation.error,
+        );
+        return invalidResponse(
+          "invalid_exact_stellar_payload_unexpected_balance_changes",
+          fromAddress,
+        );
+      }
     }
 
     console.log("Verification successful for payer:", fromAddress);

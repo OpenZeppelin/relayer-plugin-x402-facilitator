@@ -265,6 +265,16 @@ export async function settle(
   }
   const network = paymentPayload.accepted.network;
 
+  // Validate incoming request network matches requirements and config
+  // Note: This is also validated in verify(), but checking here provides
+  // defense-in-depth against future code changes
+  if (
+    !networksMatch(network, paymentRequirements.network) ||
+    !networksMatch(network, networkConfig.network)
+  ) {
+    return errorResponse("settle_exact_stellar_network_mismatch", network);
+  }
+
   const relayer = api.useRelayer(networkConfig.relayer_id);
   const relayerInfo = await relayer.getRelayer();
 
