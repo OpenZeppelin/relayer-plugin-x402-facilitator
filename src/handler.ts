@@ -159,8 +159,8 @@ async function handleSupported(
       // For Stellar networks, include maxLedgerOffset as a static policy value
       const extra =
         networkConfig.type === "stellar"
-          ? { maxLedgerOffset: STELLAR_MAX_LEDGER_OFFSET }
-          : {};
+          ? { areFeesSponsored: true, maxLedgerOffset: STELLAR_MAX_LEDGER_OFFSET }
+          : { areFeesSponsored: true };
 
       return {
         networkConfig,

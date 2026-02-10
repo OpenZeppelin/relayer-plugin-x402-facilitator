@@ -126,6 +126,7 @@ export function buildPaymentRequirementsV2(
     payTo: "G-PAYEE",
     maxTimeoutSeconds: 30,
     asset: "ASSET_CONTRACT",
+    extra: { areFeesSponsored: true },
     ...overrides,
   };
 }

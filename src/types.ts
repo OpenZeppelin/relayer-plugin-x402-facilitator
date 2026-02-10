@@ -32,7 +32,7 @@ export type ExactSvmPayload = {
   transaction: string; // base64 transaction
 };
 
-export type ExactStellarPayload = {
+export type ExactStellarPayloadV2 = {
   transaction: string; // base64 transaction
 };
 
@@ -40,7 +40,7 @@ export type ExactStellarPayload = {
 export type PaymentPayload = {
   x402Version: 2;
   accepted: PaymentRequirements;
-  payload: ExactEvmPayload | ExactSvmPayload | ExactStellarPayload;
+  payload: ExactEvmPayload | ExactSvmPayload | ExactStellarPayloadV2;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   extensions?: Record<string, any>;
 };
@@ -58,7 +58,7 @@ export type PaymentRequirements = {
   maxTimeoutSeconds: number;
   asset: string; // account or asset address, or ISO 4217 currency code
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  extra?: Record<string, any>;
+  extra: { areFeesSponsored: boolean } & Record<string, any>;
 };
 
 // PaymentRequired (top-level response in v2)

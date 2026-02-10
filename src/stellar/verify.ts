@@ -24,7 +24,7 @@ import {
   scValToNative,
 } from "@stellar/stellar-sdk";
 import {
-  ExactStellarPayload,
+  ExactStellarPayloadV2,
   NetworkConfig,
   VerifyRequest,
   VerifyResponse,
@@ -36,6 +36,7 @@ import {
   networksMatch,
   validateAuthEntryExpirations,
   validateFacilitatorNotInAuth,
+  validateNoSubInvocations,
   validateSimulationEvents,
 } from "./utils";
 
@@ -56,6 +57,9 @@ type ErrorReason =
   | "invalid_exact_stellar_payload_unsafe_tx_or_op_source"
   | "invalid_exact_stellar_payload_unsafe_from_address"
   | "invalid_exact_stellar_payload_facilitator_in_auth"
+  | "invalid_exact_stellar_payload_has_subinvocations"
+  | "invalid_exact_stellar_payload_no_transfer_events"
+  | "invalid_exact_stellar_payload_event_not_transfer"
   | "invalid_exact_stellar_payload_unexpected_balance_changes"
   | "invalid_exact_stellar_payload_has_envelope_signatures"
   | "invalid_exact_stellar_payload_missing_auth_entries"
@@ -95,13 +99,13 @@ export async function verify(
     // 1. Validate protocol version - only v2 is supported
     if (paymentPayload.x402Version !== 2) {
       return invalidResponse(
-        "invalid_x402_version - only x402 v2 is supported.",
+        "invalid_x402_version",
       );
     }
 
     // Extract scheme and network from accepted field
     if (!paymentPayload.accepted) {
-      return invalidResponse("invalid_x402_version - missing accepted field");
+      return invalidResponse("invalid_x402_version");
     }
 
     const scheme = paymentPayload.accepted.scheme;
@@ -142,7 +146,7 @@ export async function verify(
     }
 
     // 2. Parse and decode transaction
-    const stellarPayload = paymentPayload.payload as ExactStellarPayload;
+    const stellarPayload = paymentPayload.payload as ExactStellarPayloadV2;
     if (!stellarPayload.transaction) {
       return invalidResponse("invalid_exact_stellar_payload_malformed");
     }
@@ -235,7 +239,7 @@ export async function verify(
     // Validate amount (v2 uses amount field)
     if (!paymentRequirements.amount) {
       return invalidResponse(
-        "invalid_exact_stellar_payload_wrong_amount - missing amount",
+        "invalid_exact_stellar_payload_wrong_amount",
         fromAddress,
       );
     }
@@ -313,6 +317,12 @@ export async function verify(
       return invalidResponse(facilitatorError, fromAddress);
     }
 
+    // Security check: auth entries MUST NOT have sub-invocations
+    const subInvocationError = validateNoSubInvocations(authEntries);
+    if (subInvocationError) {
+      return invalidResponse(subInvocationError, fromAddress);
+    }
+
     // 8. Validate auth entry expiration ledgers are within allowed window
     const maxTimeoutSeconds = paymentRequirements.maxTimeoutSeconds ?? 30;
     const expirationResult = await validateAuthEntryExpirations(
@@ -372,28 +382,30 @@ export async function verify(
       [];
 
     if (simulationEvents.length === 0) {
-      console.warn(
-        "No events in simulation response - skipping event validation",
+      return invalidResponse(
+        "invalid_exact_stellar_payload_no_transfer_events",
+        fromAddress,
       );
-    } else {
-      const eventValidation = validateSimulationEvents(
-        simulationEvents,
-        paymentRequirements.asset, // token contract
-        fromAddress, // payer
-        paymentRequirements.payTo, // recipient
-        requiredAmount, // exact amount
-      );
+    }
 
-      if (!eventValidation.isValid) {
-        console.error(
-          "Simulation event validation failed:",
-          eventValidation.error,
-        );
-        return invalidResponse(
+    const eventValidation = validateSimulationEvents(
+      simulationEvents,
+      paymentRequirements.asset, // token contract
+      fromAddress, // payer
+      paymentRequirements.payTo, // recipient
+      requiredAmount, // exact amount
+    );
+
+    if (!eventValidation.isValid) {
+      console.error(
+        "Simulation event validation failed:",
+        eventValidation.error,
+      );
+      return invalidResponse(
+        eventValidation.errorCode ||
           "invalid_exact_stellar_payload_unexpected_balance_changes",
-          fromAddress,
-        );
-      }
+        fromAddress,
+      );
     }
 
     console.log("Verification successful for payer:", fromAddress);

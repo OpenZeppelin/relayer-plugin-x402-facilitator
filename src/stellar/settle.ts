@@ -15,7 +15,7 @@
  */
 import { Address, Operation, Transaction, xdr } from "@stellar/stellar-sdk";
 import {
-  ExactStellarPayload,
+  ExactStellarPayloadV2,
   NetworkConfig,
   PaymentRequirements,
   SettleRequest,
@@ -259,7 +259,7 @@ export async function settle(
   // Extract network from accepted field
   if (!paymentPayload.accepted) {
     return errorResponse(
-      "invalid_exact_stellar_payload_malformed - missing accepted field",
+      "invalid_exact_stellar_payload_malformed",
       "",
     );
   }
@@ -304,7 +304,7 @@ export async function settle(
     payer = verifyResult.payer;
 
     // 2. Extract and parse the user-signed transaction XDR
-    const stellarPayload = paymentPayload.payload as ExactStellarPayload;
+    const stellarPayload = paymentPayload.payload as ExactStellarPayloadV2;
     const networkPassphrase = getNetworkPassphrase(paymentRequirements.network);
     const transaction = new Transaction(
       stellarPayload.transaction,

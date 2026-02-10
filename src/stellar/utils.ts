@@ -218,6 +218,42 @@ export function validateFacilitatorNotInAuth(
 }
 
 /**
+ * Validates that no auth entries contain sub-invocations.
+ *
+ * Security check: Auth entries should only authorize a single root invocation
+ * without any sub-invocations. Sub-invocations could authorize additional
+ * token transfers or operations beyond the intended payment.
+ *
+ * @param authEntries - Authorization entries from the transaction
+ * @returns Error reason string if validation fails, null if valid
+ */
+export function validateNoSubInvocations(
+  authEntries: xdr.SorobanAuthorizationEntry[],
+): string | null {
+  for (const authEntry of authEntries) {
+    try {
+      const credentials = authEntry.credentials();
+      const credentialsType = credentials.switch().name;
+
+      if (credentialsType === "sorobanCredentialsAddress") {
+        const subInvocations = authEntry.rootInvocation().subInvocations();
+        if (subInvocations.length > 0) {
+          console.error(
+            `Security violation: auth entry has ${subInvocations.length} sub-invocation(s)`,
+          );
+          return "invalid_exact_stellar_payload_has_subinvocations";
+        }
+      }
+    } catch (error) {
+      console.error("Error checking sub-invocations in auth entry:", error);
+      return "invalid_exact_stellar_payload_has_subinvocations";
+    }
+  }
+
+  return null;
+}
+
+/**
  * Extracts signed addresses from auth entries attached to the operation.
  *
  * For Soroban transactions, the client signs auth entries (not the transaction envelope).
@@ -276,11 +312,21 @@ export interface TransferEvent {
 }
 
 /**
+ * Result of parsing transfer events from simulation, including
+ * detection of non-transfer contract events.
+ */
+export interface ParseTransferEventsResult {
+  transferEvents: TransferEvent[];
+  nonTransferContractEventDetected: boolean;
+}
+
+/**
  * Result of validating simulation events
  */
 export interface EventValidationResult {
   isValid: boolean;
   error?: string;
+  errorCode?: string;
   transferEvents: TransferEvent[];
 }
 
@@ -292,12 +338,13 @@ export interface EventValidationResult {
  * - Data: i128(amount)
  *
  * @param diagnosticEvents - Decoded DiagnosticEvent array from simulation response
- * @returns Array of parsed transfer events
+ * @returns Parsed transfer events and whether non-transfer contract events were detected
  */
 export function parseTransferEventsFromSimulation(
   diagnosticEvents: xdr.DiagnosticEvent[] | string[],
-): TransferEvent[] {
+): ParseTransferEventsResult {
   const transferEvents: TransferEvent[] = [];
+  let nonTransferContractEventDetected = false;
 
   for (let i = 0; i < diagnosticEvents.length; i++) {
     const rawEvent = diagnosticEvents[i];
@@ -342,17 +389,20 @@ export function parseTransferEventsFromSimulation(
       // Check if this is a transfer event
       // Topics should be: [Symbol("transfer"), Address(from), Address(to)]
       if (topics.length < 3) {
+        nonTransferContractEventDetected = true;
         continue;
       }
 
       // First topic should be the symbol "transfer"
       const firstTopic = topics[0];
       if (firstTopic.switch().name !== "scvSymbol") {
+        nonTransferContractEventDetected = true;
         continue;
       }
 
       const eventName = firstTopic.sym().toString();
       if (eventName !== "transfer") {
+        nonTransferContractEventDetected = true;
         continue;
       }
 
@@ -367,12 +417,14 @@ export function parseTransferEventsFromSimulation(
       if (fromTopic.switch().name === "scvAddress") {
         from = Address.fromScVal(fromTopic).toString();
       } else {
+        nonTransferContractEventDetected = true;
         continue; // Not a standard transfer event format
       }
 
       if (toTopic.switch().name === "scvAddress") {
         to = Address.fromScVal(toTopic).toString();
       } else {
+        nonTransferContractEventDetected = true;
         continue; // Not a standard transfer event format
       }
 
@@ -388,6 +440,7 @@ export function parseTransferEventsFromSimulation(
         } else if (typeof nativeValue === "number") {
           amount = BigInt(nativeValue);
         } else {
+          nonTransferContractEventDetected = true;
           continue; // Can't parse amount
         }
       }
@@ -407,7 +460,7 @@ export function parseTransferEventsFromSimulation(
     }
   }
 
-  return transferEvents;
+  return { transferEvents, nonTransferContractEventDetected };
 }
 
 /**
@@ -431,7 +484,17 @@ export function validateSimulationEvents(
   expectedTo: string,
   expectedAmount: bigint,
 ): EventValidationResult {
-  const transferEvents = parseTransferEventsFromSimulation(diagnosticEvents);
+  const { transferEvents, nonTransferContractEventDetected } =
+    parseTransferEventsFromSimulation(diagnosticEvents);
+
+  if (nonTransferContractEventDetected) {
+    return {
+      isValid: false,
+      error: "Non-transfer contract event detected",
+      errorCode: "invalid_exact_stellar_payload_event_not_transfer",
+      transferEvents,
+    };
+  }
 
   // Filter transfer events for the expected token contract
   const tokenTransferEvents = transferEvents.filter(
