@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import {
   getEstimatedLedgerCloseTimeSeconds,
   getNetworkPassphrase,
+  isValidStellarNetwork,
   mapRelayerNetworkToStellar,
 } from "../src/stellar/utils";
 
@@ -44,9 +45,31 @@ describe("stellar utils", () => {
       expect(result).toBe("stellar:testnet");
     });
 
-    test("maps mainnet to stellar", () => {
+    test("maps mainnet to stellar:pubnet", () => {
       const result = mapRelayerNetworkToStellar("mainnet");
-      expect(result).toBe("stellar");
+      expect(result).toBe("stellar:pubnet");
+    });
+  });
+
+  describe("isValidStellarNetwork", () => {
+    test("accepts stellar:testnet", () => {
+      expect(isValidStellarNetwork("stellar:testnet")).toBe(true);
+    });
+
+    test("accepts stellar:pubnet", () => {
+      expect(isValidStellarNetwork("stellar:pubnet")).toBe(true);
+    });
+
+    test("rejects non-CAIP-2 identifier 'testnet'", () => {
+      expect(isValidStellarNetwork("testnet")).toBe(false);
+    });
+
+    test("rejects unknown CAIP-2 network 'stellar:devnet'", () => {
+      expect(isValidStellarNetwork("stellar:devnet")).toBe(false);
+    });
+
+    test("rejects empty string", () => {
+      expect(isValidStellarNetwork("")).toBe(false);
     });
   });
 

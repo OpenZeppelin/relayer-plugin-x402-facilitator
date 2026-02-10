@@ -249,6 +249,36 @@ describe("stellar verify", () => {
     expect(result.invalidReason).toBe("invalid_scheme");
   });
 
+  test("rejects non-CAIP-2 network identifier", async () => {
+    const tx = buildInvokeTxBase64();
+    const payload = buildPaymentPayloadV2(tx, { network: "testnet" });
+    const reqs = buildPaymentRequirementsV2({ network: "testnet" });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      makeApi(),
+      { ...networkConfig, network: "testnet" },
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe("invalid_network");
+  });
+
+  test("rejects unknown CAIP-2 network", async () => {
+    const tx = buildInvokeTxBase64();
+    const payload = buildPaymentPayloadV2(tx, { network: "stellar:devnet" });
+    const reqs = buildPaymentRequirementsV2({ network: "stellar:devnet" });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      makeApi(),
+      { ...networkConfig, network: "stellar:devnet" },
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe("invalid_network");
+  });
+
   test("rejects network mismatch between payload and requirements", async () => {
     const tx = buildInvokeTxBase64();
     const payload = buildPaymentPayloadV2(tx, { network: "stellar:pubnet" });
@@ -751,6 +781,53 @@ describe("stellar verify", () => {
     expect(result.isValid).toBe(false);
     expect(result.invalidReason).toBe(
       "invalid_exact_stellar_payload_event_not_transfer",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("rejects simulation with missing contract ID in events", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    const api = makeApi();
+    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(null);
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateFacilitatorNotInAuth").mockReturnValue(null);
+    vi.spyOn(utils, "validateNoSubInvocations").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+    vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
+      isValid: false,
+      error: "Simulation event missing contract ID",
+      errorCode: "invalid_exact_stellar_payload_event_missing_contract_id",
+      transferEvents: [],
+    });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_event_missing_contract_id",
     );
     expect(result.payer).toBe("G-PAYER");
   });

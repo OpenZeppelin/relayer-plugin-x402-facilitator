@@ -40,7 +40,7 @@ type ErrorReason =
   | "settle_channel_service_failed"
   | "unexpected_settle_error";
 
-const DEFAULT_TIMEOUT_SECONDS = 30;
+const DEFAULT_TIMEOUT_SECONDS = 60;
 
 /**
  * Channel service response type

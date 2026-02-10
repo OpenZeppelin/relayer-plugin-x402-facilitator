@@ -139,7 +139,18 @@ export function getNetworkPassphrase(network: string): string {
  * Maps relayer network name to Stellar network format
  */
 export function mapRelayerNetworkToStellar(relayerNetwork: string): string {
-  return relayerNetwork === "testnet" ? "stellar:testnet" : "stellar";
+  return relayerNetwork === "testnet" ? "stellar:testnet" : "stellar:pubnet";
+}
+
+const VALID_STELLAR_NETWORKS = new Set(["stellar:pubnet", "stellar:testnet"]);
+
+/**
+ * Validates that a network identifier is a recognized CAIP-2 Stellar network.
+ *
+ * Per spec, network identifiers must use CAIP-2 format: "stellar:pubnet" or "stellar:testnet".
+ */
+export function isValidStellarNetwork(network: string): boolean {
+  return VALID_STELLAR_NETWORKS.has(network);
 }
 
 /**
@@ -460,6 +471,7 @@ export interface TransferEvent {
 export interface ParseTransferEventsResult {
   transferEvents: TransferEvent[];
   nonTransferContractEventDetected: boolean;
+  missingContractIdDetected: boolean;
 }
 
 /**
@@ -487,6 +499,7 @@ export function parseTransferEventsFromSimulation(
 ): ParseTransferEventsResult {
   const transferEvents: TransferEvent[] = [];
   let nonTransferContractEventDetected = false;
+  let missingContractIdDetected = false;
 
   for (let i = 0; i < diagnosticEvents.length; i++) {
     const rawEvent = diagnosticEvents[i];
@@ -503,9 +516,20 @@ export function parseTransferEventsFromSimulation(
 
       const event = diagnosticEvent.event();
 
-      // Skip events without contract ID (system events)
+      // Get event type - we only care about contract events
+      // ContractEventType: 0 = System, 1 = Contract, 2 = Diagnostic
+      const eventTypeName = event.type().name;
+
+      if (eventTypeName !== "contract") {
+        // Not a contract event, skip system and diagnostic events
+        // (these legitimately may not have a contract ID)
+        continue;
+      }
+
+      // For contract events, contract ID is required
       const contractIdBuffer = event.contractId();
       if (!contractIdBuffer) {
+        missingContractIdDetected = true;
         continue;
       }
 
@@ -514,15 +538,6 @@ export function parseTransferEventsFromSimulation(
       const contractId = StrKey.encodeContract(
         Buffer.from(contractIdBuffer as unknown as Uint8Array),
       );
-
-      // Get event type - we care about contract events
-      // ContractEventType: 0 = System, 1 = Contract, 2 = Diagnostic
-      const eventTypeName = event.type().name;
-
-      if (eventTypeName !== "contract") {
-        // Not a contract event, skip system and diagnostic events
-        continue;
-      }
 
       const body = event.body().v0();
       const topics = body.topics();
@@ -602,7 +617,11 @@ export function parseTransferEventsFromSimulation(
     }
   }
 
-  return { transferEvents, nonTransferContractEventDetected };
+  return {
+    transferEvents,
+    nonTransferContractEventDetected,
+    missingContractIdDetected,
+  };
 }
 
 /**
@@ -626,8 +645,20 @@ export function validateSimulationEvents(
   expectedTo: string,
   expectedAmount: bigint,
 ): EventValidationResult {
-  const { transferEvents, nonTransferContractEventDetected } =
-    parseTransferEventsFromSimulation(diagnosticEvents);
+  const {
+    transferEvents,
+    nonTransferContractEventDetected,
+    missingContractIdDetected,
+  } = parseTransferEventsFromSimulation(diagnosticEvents);
+
+  if (missingContractIdDetected) {
+    return {
+      isValid: false,
+      error: "Simulation event missing contract ID",
+      errorCode: "invalid_exact_stellar_payload_event_missing_contract_id",
+      transferEvents,
+    };
+  }
 
   if (nonTransferContractEventDetected) {
     return {

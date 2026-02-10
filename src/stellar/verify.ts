@@ -32,6 +32,7 @@ import {
 import {
   getNetworkPassphrase,
   getSignedAddressesFromAuthEntries,
+  isValidStellarNetwork,
   mapRelayerNetworkToStellar,
   networksMatch,
   validateAuthEntryExpirations,
@@ -61,6 +62,7 @@ type ErrorReason =
   | "invalid_exact_stellar_payload_has_subinvocations"
   | "invalid_exact_stellar_payload_no_transfer_events"
   | "invalid_exact_stellar_payload_event_not_transfer"
+  | "invalid_exact_stellar_payload_event_missing_contract_id"
   | "invalid_exact_stellar_payload_unexpected_balance_changes"
   | "invalid_exact_stellar_payload_has_envelope_signatures"
   | "invalid_exact_stellar_payload_missing_auth_entries"
@@ -102,9 +104,7 @@ export async function verify(
 
     // 1. Validate protocol version - only v2 is supported
     if (paymentPayload.x402Version !== 2) {
-      return invalidResponse(
-        "invalid_x402_version",
-      );
+      return invalidResponse("invalid_x402_version");
     }
 
     // Extract scheme and network from accepted field
@@ -122,6 +122,11 @@ export async function verify(
     // Validate requirements.scheme is also "exact"
     if (paymentRequirements.scheme !== "exact") {
       return invalidResponse("invalid_scheme");
+    }
+
+    // Validate network is a recognized CAIP-2 Stellar network identifier
+    if (!isValidStellarNetwork(paymentRequirements.network)) {
+      return invalidResponse("invalid_network");
     }
 
     // Validate network matches between accepted, requirements, and config
@@ -256,7 +261,11 @@ export async function verify(
     }
 
     // 6. Ensure transaction envelope signatures are empty
-    // The relayer will rebuild the transaction with its own source account
+    // The relayer will rebuild the transaction with its own source account.
+    // NOTE: This check enforces facilitator-sponsored fees (current spec).
+    // A future spec revision may allow client-sponsored fees, in which case
+    // the envelope will carry the client's signature and this check must be
+    // revisited.
     if (transaction.signatures.length > 0) {
       console.error(
         "Transaction has envelope signatures, expected empty for relayer rebuild",
@@ -334,7 +343,7 @@ export async function verify(
     }
 
     // 8. Validate auth entry expiration ledgers are within allowed window
-    const maxTimeoutSeconds = paymentRequirements.maxTimeoutSeconds ?? 30;
+    const maxTimeoutSeconds = paymentRequirements.maxTimeoutSeconds ?? 60;
     const expirationResult = await validateAuthEntryExpirations(
       authEntries,
       relayer,
