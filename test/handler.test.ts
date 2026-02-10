@@ -120,7 +120,7 @@ describe("handler routing", () => {
     expect((result as any).kinds[0].x402Version).toBe(2);
     expect((result as any).kinds[0].network).toBe("stellar:testnet");
     expect((result as any).kinds[0].scheme).toBe("exact");
-    expect((result as any).kinds[0].extra?.maxLedgerOffset).toBe(12); // offset for client to compute expiration
+    expect((result as any).kinds[0].extra?.areFeesSponsored).toBe(true);
 
     // signers field
     expect(result).toHaveProperty("signers");
@@ -229,8 +229,7 @@ describe("handler routing", () => {
     expect((result as any).kinds).toHaveLength(1);
     expect((result as any).kinds[0].x402Version).toBe(2);
     expect((result as any).kinds[0].network).toBe("stellar:testnet");
-    // maxLedgerOffset is a static value, always present for Stellar
-    expect((result as any).kinds[0].extra?.maxLedgerOffset).toBe(12);
+    expect((result as any).kinds[0].extra?.areFeesSponsored).toBe(true);
     // signers should be undefined when relayer info fetch fails
     expect((result as any).signers).toBeUndefined();
   });

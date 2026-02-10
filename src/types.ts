@@ -135,6 +135,7 @@ export type NetworkConfig = {
   assets: string[];
   channel_service_api_url?: string;
   channel_service_api_key?: string;
+  maxTransactionFeeStroops?: string;
 };
 
 export type ConfigNetwork = "stellar" | "evm" | "solana";

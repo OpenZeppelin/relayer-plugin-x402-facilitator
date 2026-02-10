@@ -7,6 +7,115 @@ import { Relayer, ScVal } from "@openzeppelin/relayer-sdk";
 
 // Default estimated ledger time in seconds (Stellar averages ~5-6 seconds per ledger)
 const DEFAULT_ESTIMATED_LEDGER_SECONDS = 5;
+const LEDGER_SAMPLE_SIZE = 10;
+
+/**
+ * Estimates the average ledger close time by sampling recent ledgers.
+ *
+ * Calls the Soroban RPC `getLedgers` method to fetch recent ledgers,
+ * then calculates the average time between consecutive ledger closings.
+ * Falls back to DEFAULT_ESTIMATED_LEDGER_SECONDS (5s) if the RPC call
+ * fails, returns insufficient data, or the calculated average is invalid.
+ *
+ * @param relayer - Relayer instance for RPC calls
+ * @returns Estimated ledger close time in seconds
+ */
+export async function getEstimatedLedgerCloseTimeSeconds(
+  relayer: Relayer,
+): Promise<number> {
+  try {
+    const latestLedgerResponse = await relayer.rpc({
+      method: "getLatestLedger",
+      id: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
+      jsonrpc: "2.0",
+      params: {},
+    });
+
+    if (latestLedgerResponse.error || !latestLedgerResponse.result) {
+      console.debug(
+        "Failed to get latest ledger for estimation, using default",
+      );
+      return DEFAULT_ESTIMATED_LEDGER_SECONDS;
+    }
+
+    const latestSequence = (
+      latestLedgerResponse.result as { sequence: number }
+    ).sequence;
+    const startLedger = Math.max(1, latestSequence - LEDGER_SAMPLE_SIZE);
+
+    const getLedgersResponse = await relayer.rpc({
+      method: "getLedgers",
+      id: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
+      jsonrpc: "2.0",
+      params: {
+        startLedger,
+        pagination: {
+          limit: LEDGER_SAMPLE_SIZE,
+        },
+      },
+    });
+
+    if (getLedgersResponse.error || !getLedgersResponse.result) {
+      console.debug(
+        "getLedgers RPC failed, using default ledger time estimate",
+      );
+      return DEFAULT_ESTIMATED_LEDGER_SECONDS;
+    }
+
+    const result = getLedgersResponse.result as {
+      ledgers?: Array<{ sequence: number; ledgerCloseTime: string }>;
+    };
+
+    const ledgers = result.ledgers;
+    if (!ledgers || ledgers.length < 2) {
+      console.debug(
+        "Insufficient ledger data for estimation, using default",
+      );
+      return DEFAULT_ESTIMATED_LEDGER_SECONDS;
+    }
+
+    const sorted = [...ledgers].sort((a, b) => a.sequence - b.sequence);
+
+    let totalDelta = 0;
+    let deltaCount = 0;
+
+    for (let i = 1; i < sorted.length; i++) {
+      const prevTime = parseInt(sorted[i - 1].ledgerCloseTime, 10);
+      const currTime = parseInt(sorted[i].ledgerCloseTime, 10);
+
+      if (!isNaN(prevTime) && !isNaN(currTime) && currTime > prevTime) {
+        totalDelta += currTime - prevTime;
+        deltaCount++;
+      }
+    }
+
+    if (deltaCount === 0) {
+      console.debug("No valid ledger time deltas found, using default");
+      return DEFAULT_ESTIMATED_LEDGER_SECONDS;
+    }
+
+    const averageCloseTime = totalDelta / deltaCount;
+
+    if (averageCloseTime <= 0 || !isFinite(averageCloseTime)) {
+      console.debug(
+        `Calculated average ledger time ${averageCloseTime}s is invalid, using default`,
+      );
+      return DEFAULT_ESTIMATED_LEDGER_SECONDS;
+    }
+
+    console.debug(
+      `Estimated ledger close time: ${averageCloseTime.toFixed(2)}s (from ${deltaCount} samples)`,
+    );
+    return averageCloseTime;
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : String(error);
+    console.debug(
+      `Error estimating ledger close time: ${errorMessage}, using default`,
+    );
+    return DEFAULT_ESTIMATED_LEDGER_SECONDS;
+  }
+}
 
 /**
  * Gets the network passphrase for a given network
@@ -247,6 +356,39 @@ export function validateNoSubInvocations(
     } catch (error) {
       console.error("Error checking sub-invocations in auth entry:", error);
       return "invalid_exact_stellar_payload_has_subinvocations";
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Validates that all auth entries use the sorobanCredentialsAddress credential type.
+ *
+ * Security check: Per the spec, auth entries MUST use credential type
+ * `sorobanCredentialsAddress` only. Other credential types (e.g.,
+ * `sorobanCredentialsSourceAccount`) must be explicitly rejected.
+ *
+ * @param authEntries - Authorization entries from the transaction
+ * @returns Error reason string if validation fails, null if valid
+ */
+export function validateCredentialTypes(
+  authEntries: xdr.SorobanAuthorizationEntry[],
+): string | null {
+  for (const authEntry of authEntries) {
+    try {
+      const credentials = authEntry.credentials();
+      const credentialsType = credentials.switch().name;
+
+      if (credentialsType !== "sorobanCredentialsAddress") {
+        console.error(
+          `Unsupported credential type: ${credentialsType}. Only sorobanCredentialsAddress is allowed.`,
+        );
+        return "invalid_exact_stellar_payload_unsupported_credential_type";
+      }
+    } catch (error) {
+      console.error("Error checking credential type in auth entry:", error);
+      return "invalid_exact_stellar_payload_unsupported_credential_type";
     }
   }
 
@@ -616,9 +758,11 @@ export async function validateAuthEntryExpirations(
   const currentLedger = (latestLedgerResponse.result as { sequence: number })
     .sequence;
 
-  // Calculate max allowed expiration: currentLedger + ceil(maxTimeoutSeconds / estimatedLedgerSeconds)
+  // Calculate max allowed expiration using dynamic ledger time estimation
+  const estimatedLedgerSeconds =
+    await getEstimatedLedgerCloseTimeSeconds(relayer);
   const maxLedgerOffset = Math.ceil(
-    maxTimeoutSeconds / DEFAULT_ESTIMATED_LEDGER_SECONDS,
+    maxTimeoutSeconds / estimatedLedgerSeconds,
   );
   const maxAllowedExpiration = currentLedger + maxLedgerOffset;
 

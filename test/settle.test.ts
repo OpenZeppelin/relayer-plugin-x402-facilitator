@@ -17,6 +17,7 @@ vi.mock("@stellar/stellar-sdk", () => {
     operations: any[];
     signatures: any[];
     source: string | undefined;
+    fee: string;
 
     constructor(base64: string, _networkPassphrase?: string) {
       const raw = JSON.parse(Buffer.from(base64, "base64").toString("utf8"));
@@ -27,11 +28,13 @@ vi.mock("@stellar/stellar-sdk", () => {
         this.operations = txData.operations;
         this.signatures = txData.signatures;
         this.source = txData.source;
+        this.fee = txData.fee ?? "100000";
       } else {
         // Fallback for non-test transactions
         this.operations = raw.operations ?? [];
         this.signatures = raw.signatures ?? [];
         this.source = raw.source;
+        this.fee = raw.fee ?? "100000";
       }
     }
   }

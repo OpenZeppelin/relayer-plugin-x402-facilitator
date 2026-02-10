@@ -1,5 +1,6 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
+  getEstimatedLedgerCloseTimeSeconds,
   getNetworkPassphrase,
   mapRelayerNetworkToStellar,
 } from "../src/stellar/utils";
@@ -46,6 +47,83 @@ describe("stellar utils", () => {
     test("maps mainnet to stellar", () => {
       const result = mapRelayerNetworkToStellar("mainnet");
       expect(result).toBe("stellar");
+    });
+  });
+
+  describe("getEstimatedLedgerCloseTimeSeconds", () => {
+    function makeRelayer(rpcHandler: (params: any) => any) {
+      return { rpc: vi.fn().mockImplementation(rpcHandler) } as any;
+    }
+
+    test("returns average close time from getLedgers", async () => {
+      const relayer = makeRelayer((params: any) => {
+        if (params.method === "getLatestLedger") {
+          return Promise.resolve({ result: { sequence: 1000 } });
+        }
+        if (params.method === "getLedgers") {
+          return Promise.resolve({
+            result: {
+              ledgers: [
+                { sequence: 991, ledgerCloseTime: "1000" },
+                { sequence: 992, ledgerCloseTime: "1006" },
+                { sequence: 993, ledgerCloseTime: "1012" },
+                { sequence: 994, ledgerCloseTime: "1018" },
+                { sequence: 995, ledgerCloseTime: "1024" },
+              ],
+            },
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      const result = await getEstimatedLedgerCloseTimeSeconds(relayer);
+      expect(result).toBe(6);
+    });
+
+    test("falls back to default when getLedgers fails", async () => {
+      const relayer = makeRelayer((params: any) => {
+        if (params.method === "getLatestLedger") {
+          return Promise.resolve({ result: { sequence: 1000 } });
+        }
+        if (params.method === "getLedgers") {
+          return Promise.resolve({ error: "method not found" });
+        }
+        return Promise.resolve({});
+      });
+
+      const result = await getEstimatedLedgerCloseTimeSeconds(relayer);
+      expect(result).toBe(5);
+    });
+
+    test("falls back to default with insufficient ledger data", async () => {
+      const relayer = makeRelayer((params: any) => {
+        if (params.method === "getLatestLedger") {
+          return Promise.resolve({ result: { sequence: 1000 } });
+        }
+        if (params.method === "getLedgers") {
+          return Promise.resolve({
+            result: {
+              ledgers: [{ sequence: 1000, ledgerCloseTime: "1000" }],
+            },
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      const result = await getEstimatedLedgerCloseTimeSeconds(relayer);
+      expect(result).toBe(5);
+    });
+
+    test("falls back to default when getLatestLedger fails", async () => {
+      const relayer = makeRelayer((params: any) => {
+        if (params.method === "getLatestLedger") {
+          return Promise.resolve({ error: "rpc error" });
+        }
+        return Promise.resolve({});
+      });
+
+      const result = await getEstimatedLedgerCloseTimeSeconds(relayer);
+      expect(result).toBe(5);
     });
   });
 });

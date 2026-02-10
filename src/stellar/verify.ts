@@ -35,6 +35,7 @@ import {
   mapRelayerNetworkToStellar,
   networksMatch,
   validateAuthEntryExpirations,
+  validateCredentialTypes,
   validateFacilitatorNotInAuth,
   validateNoSubInvocations,
   validateSimulationEvents,
@@ -67,6 +68,9 @@ type ErrorReason =
   | "invalid_exact_stellar_payload_unsigned_auth_entry"
   | "invalid_exact_stellar_payload_auth_expiration_too_far"
   | "invalid_exact_stellar_payload_auth_already_expired"
+  | "invalid_exact_stellar_payload_unsupported_credential_type"
+  | "invalid_exact_stellar_payload_fee_below_minimum"
+  | "invalid_exact_stellar_payload_fee_exceeds_maximum"
   | "verify_network_mismatch"
   | "unexpected_verify_error"
   | "unsupported_asset";
@@ -274,6 +278,12 @@ export async function verify(
       );
     }
 
+    // All auth entries must use sorobanCredentialsAddress credential type
+    const credentialTypeError = validateCredentialTypes(authEntries);
+    if (credentialTypeError) {
+      return invalidResponse(credentialTypeError, fromAddress);
+    }
+
     // Check signatures in the auth entries attached to the operation
     const { signedAddresses, unsignedAddresses } =
       getSignedAddressesFromAuthEntries(authEntries);
@@ -374,7 +384,39 @@ export async function verify(
       );
     }
 
-    // 11. Validate simulation events show only expected balance changes
+    // 11. Validate transaction fee bounds
+    const successSimResponse =
+      simulateResponse as rpc.Api.SimulateTransactionSuccessResponse;
+    const minResourceFee = successSimResponse.minResourceFee;
+    const transactionFee = transaction.fee;
+
+    if (minResourceFee && transactionFee) {
+      if (BigInt(transactionFee) < BigInt(minResourceFee)) {
+        console.error(
+          `Transaction fee ${transactionFee} is below minimum resource fee ${minResourceFee}`,
+        );
+        return invalidResponse(
+          "invalid_exact_stellar_payload_fee_below_minimum",
+          fromAddress,
+        );
+      }
+    }
+
+    if (transactionFee && networkConfig.maxTransactionFeeStroops) {
+      if (
+        BigInt(transactionFee) > BigInt(networkConfig.maxTransactionFeeStroops)
+      ) {
+        console.error(
+          `Transaction fee ${transactionFee} exceeds maximum allowed fee ${networkConfig.maxTransactionFeeStroops}`,
+        );
+        return invalidResponse(
+          "invalid_exact_stellar_payload_fee_exceeds_maximum",
+          fromAddress,
+        );
+      }
+    }
+
+    // 12. Validate simulation events show only expected balance changes
     // Must emit events showing only the expected balance changes
     // (recipient increase, payer decrease) for requirements.amount
     const simulationEvents =
