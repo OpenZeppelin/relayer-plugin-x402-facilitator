@@ -193,12 +193,15 @@ describe("stellar verify", () => {
     });
 
     const api = makeApi();
-    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    vi.spyOn(utils, "validateNoSubInvocations").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
     vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
       isValid: true,
       transferEvents: [],
@@ -400,7 +403,7 @@ describe("stellar verify", () => {
     });
 
     const api = makeApi();
-    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(
       "invalid_exact_stellar_payload_unsupported_credential_type",
     );
 
@@ -433,7 +436,7 @@ describe("stellar verify", () => {
     });
 
     const api = makeApi();
-    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: [],
       unsignedAddresses: ["G-PAYER"],
@@ -532,13 +535,11 @@ describe("stellar verify", () => {
     });
 
     const api = makeApi();
-    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    vi.spyOn(utils, "validateFacilitatorNotInAuth").mockReturnValue(null);
-    vi.spyOn(utils, "validateNoSubInvocations").mockReturnValue(null);
     // Mock validateAuthEntryExpirations to return auth already expired error
     vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
       isValid: false,
@@ -578,13 +579,11 @@ describe("stellar verify", () => {
     });
 
     const api = makeApi();
-    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    vi.spyOn(utils, "validateFacilitatorNotInAuth").mockReturnValue(null);
-    vi.spyOn(utils, "validateNoSubInvocations").mockReturnValue(null);
     // Mock validateAuthEntryExpirations to return expiration too far error
     vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
       isValid: false,
@@ -624,16 +623,15 @@ describe("stellar verify", () => {
     });
 
     const api = makeApi();
-    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    vi.spyOn(utils, "validateNoSubInvocations").mockReturnValue(null);
-    // Auth entry expires at ledger 1005, which is within the allowed window
-    vi.spyOn(utils, "getExpirationLedgersFromAuthEntries").mockReturnValue([
-      1005,
-    ]);
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
     vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
       isValid: true,
       transferEvents: [],
@@ -665,13 +663,7 @@ describe("stellar verify", () => {
     });
 
     const api = makeApi();
-    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(null);
-    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
-      signedAddresses: ["G-PAYER"],
-      unsignedAddresses: [],
-    });
-    vi.spyOn(utils, "validateFacilitatorNotInAuth").mockReturnValue(null);
-    vi.spyOn(utils, "validateNoSubInvocations").mockReturnValue(
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(
       "invalid_exact_stellar_payload_has_subinvocations",
     );
 
@@ -713,13 +705,11 @@ describe("stellar verify", () => {
         return Promise.resolve({ result: {} });
       }),
     });
-    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    vi.spyOn(utils, "validateFacilitatorNotInAuth").mockReturnValue(null);
-    vi.spyOn(utils, "validateNoSubInvocations").mockReturnValue(null);
     vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
       isValid: true,
       currentLedger: 1000,
@@ -754,13 +744,11 @@ describe("stellar verify", () => {
     });
 
     const api = makeApi();
-    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    vi.spyOn(utils, "validateFacilitatorNotInAuth").mockReturnValue(null);
-    vi.spyOn(utils, "validateNoSubInvocations").mockReturnValue(null);
     vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
       isValid: true,
       currentLedger: 1000,
@@ -801,13 +789,11 @@ describe("stellar verify", () => {
     });
 
     const api = makeApi();
-    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    vi.spyOn(utils, "validateFacilitatorNotInAuth").mockReturnValue(null);
-    vi.spyOn(utils, "validateNoSubInvocations").mockReturnValue(null);
     vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
       isValid: true,
       currentLedger: 1000,
@@ -850,12 +836,11 @@ describe("stellar verify", () => {
 
     // minResourceFee = 50000, transaction fee = 1000 -> should fail
     const api = makeApi();
-    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    vi.spyOn(utils, "validateNoSubInvocations").mockReturnValue(null);
     vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
       isValid: true,
       currentLedger: 1000,
@@ -896,12 +881,11 @@ describe("stellar verify", () => {
     };
 
     const api = makeApi();
-    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    vi.spyOn(utils, "validateNoSubInvocations").mockReturnValue(null);
     vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
       isValid: true,
       currentLedger: 1000,
@@ -937,12 +921,15 @@ describe("stellar verify", () => {
     });
 
     const api = makeApi();
-    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    vi.spyOn(utils, "validateNoSubInvocations").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
     vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
       isValid: true,
       transferEvents: [],
@@ -980,12 +967,15 @@ describe("stellar verify", () => {
     };
 
     const api = makeApi();
-    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    vi.spyOn(utils, "validateNoSubInvocations").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
     vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
       isValid: true,
       transferEvents: [],
@@ -1019,12 +1009,15 @@ describe("stellar verify", () => {
 
     // networkConfig has no maxTransactionFeeStroops, so max check should be skipped
     const api = makeApi();
-    vi.spyOn(utils, "validateCredentialTypes").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    vi.spyOn(utils, "validateNoSubInvocations").mockReturnValue(null);
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
     vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
       isValid: true,
       transferEvents: [],
