@@ -24,6 +24,7 @@ import {
 import type { PluginAPI, Relayer } from "@openzeppelin/relayer-sdk";
 import { ScVal, StellarTransactionResponse } from "@openzeppelin/relayer-sdk";
 import {
+  DEFAULT_TIMEOUT_SECONDS,
   getNetworkPassphrase,
   mapRelayerNetworkToStellar,
   networksMatch,
@@ -39,8 +40,6 @@ type ErrorReason =
   | "settle_exact_stellar_network_mismatch"
   | "settle_channel_service_failed"
   | "unexpected_settle_error";
-
-const DEFAULT_TIMEOUT_SECONDS = 60;
 
 /**
  * Channel service response type

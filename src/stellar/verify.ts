@@ -30,15 +30,14 @@ import {
   VerifyResponse,
 } from "../types";
 import {
+  DEFAULT_TIMEOUT_SECONDS,
   getNetworkPassphrase,
   getSignedAddressesFromAuthEntries,
   isValidStellarNetwork,
   mapRelayerNetworkToStellar,
   networksMatch,
+  validateAuthEntries,
   validateAuthEntryExpirations,
-  validateCredentialTypes,
-  validateFacilitatorNotInAuth,
-  validateNoSubInvocations,
   validateSimulationEvents,
 } from "./utils";
 
@@ -287,10 +286,13 @@ export async function verify(
       );
     }
 
-    // All auth entries must use sorobanCredentialsAddress credential type
-    const credentialTypeError = validateCredentialTypes(authEntries);
-    if (credentialTypeError) {
-      return invalidResponse(credentialTypeError, fromAddress);
+    // Validate auth entries: credential types, facilitator not in auth, no sub-invocations
+    const authEntriesError = validateAuthEntries(
+      authEntries,
+      relayerInfo.address,
+    );
+    if (authEntriesError) {
+      return invalidResponse(authEntriesError, fromAddress);
     }
 
     // Check signatures in the auth entries attached to the operation
@@ -327,23 +329,8 @@ export async function verify(
       );
     }
 
-    // Security check: facilitator address MUST NOT appear in any authorization entries
-    const facilitatorError = validateFacilitatorNotInAuth(
-      authEntries,
-      relayerInfo.address,
-    );
-    if (facilitatorError) {
-      return invalidResponse(facilitatorError, fromAddress);
-    }
-
-    // Security check: auth entries MUST NOT have sub-invocations
-    const subInvocationError = validateNoSubInvocations(authEntries);
-    if (subInvocationError) {
-      return invalidResponse(subInvocationError, fromAddress);
-    }
-
     // 8. Validate auth entry expiration ledgers are within allowed window
-    const maxTimeoutSeconds = paymentRequirements.maxTimeoutSeconds ?? 60;
+    const maxTimeoutSeconds = paymentRequirements.maxTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
     const expirationResult = await validateAuthEntryExpirations(
       authEntries,
       relayer,

@@ -7,6 +7,9 @@ import { Relayer, ScVal } from "@openzeppelin/relayer-sdk";
 
 // Default estimated ledger time in seconds (Stellar averages ~5-6 seconds per ledger)
 const DEFAULT_ESTIMATED_LEDGER_SECONDS = 5;
+
+// Default timeout in seconds for payment operations
+export const DEFAULT_TIMEOUT_SECONDS = 60;
 const LEDGER_SAMPLE_SIZE = 10;
 
 /**
@@ -308,97 +311,60 @@ export function getAllAddressesFromAuthEntries(
 }
 
 /**
- * Validates that the facilitator address does not appear in any auth entries.
+ * Validates auth entries for security and correctness in a single pass.
  *
- * Security check: The facilitator MUST NOT appear in any authorization entries.
- * This prevents the facilitator from being tricked into authorizing unintended actions.
+ * Performs the following checks:
+ * 1. Facilitator address MUST NOT appear in any authorization entries
+ *    (prevents the facilitator from being tricked into authorizing unintended actions)
+ * 2. All entries MUST use `sorobanCredentialsAddress` credential type
+ *    (other credential types like `sorobanCredentialsSourceAccount` are rejected per spec)
+ * 3. No entries may contain sub-invocations
+ *    (sub-invocations could authorize additional token transfers or operations)
  *
  * @param authEntries - Authorization entries from the transaction
  * @param facilitatorAddress - The facilitator/relayer address to check against
  * @returns Error reason string if validation fails, null if valid
  */
-export function validateFacilitatorNotInAuth(
+export function validateAuthEntries(
   authEntries: xdr.SorobanAuthorizationEntry[],
   facilitatorAddress: string | undefined,
 ): string | null {
-  if (!facilitatorAddress) {
-    return null; // No facilitator address to check
-  }
+  // Check facilitator address is not in any auth entry
+  if (facilitatorAddress) {
+    const allAuthAddresses = getAllAddressesFromAuthEntries(authEntries);
 
-  const allAuthAddresses = getAllAddressesFromAuthEntries(authEntries);
-
-  if (allAuthAddresses.includes(facilitatorAddress)) {
-    console.error(
-      `Security violation: facilitator address ${facilitatorAddress} found in auth entries`,
-    );
-    return "invalid_exact_stellar_payload_facilitator_in_auth";
-  }
-
-  return null;
-}
-
-/**
- * Validates that no auth entries contain sub-invocations.
- *
- * Security check: Auth entries should only authorize a single root invocation
- * without any sub-invocations. Sub-invocations could authorize additional
- * token transfers or operations beyond the intended payment.
- *
- * @param authEntries - Authorization entries from the transaction
- * @returns Error reason string if validation fails, null if valid
- */
-export function validateNoSubInvocations(
-  authEntries: xdr.SorobanAuthorizationEntry[],
-): string | null {
-  for (const authEntry of authEntries) {
-    try {
-      const credentials = authEntry.credentials();
-      const credentialsType = credentials.switch().name;
-
-      if (credentialsType === "sorobanCredentialsAddress") {
-        const subInvocations = authEntry.rootInvocation().subInvocations();
-        if (subInvocations.length > 0) {
-          console.error(
-            `Security violation: auth entry has ${subInvocations.length} sub-invocation(s)`,
-          );
-          return "invalid_exact_stellar_payload_has_subinvocations";
-        }
-      }
-    } catch (error) {
-      console.error("Error checking sub-invocations in auth entry:", error);
-      return "invalid_exact_stellar_payload_has_subinvocations";
+    if (allAuthAddresses.includes(facilitatorAddress)) {
+      console.error(
+        `Security violation: facilitator address ${facilitatorAddress} found in auth entries`,
+      );
+      return "invalid_exact_stellar_payload_facilitator_in_auth";
     }
   }
 
-  return null;
-}
-
-/**
- * Validates that all auth entries use the sorobanCredentialsAddress credential type.
- *
- * Security check: Per the spec, auth entries MUST use credential type
- * `sorobanCredentialsAddress` only. Other credential types (e.g.,
- * `sorobanCredentialsSourceAccount`) must be explicitly rejected.
- *
- * @param authEntries - Authorization entries from the transaction
- * @returns Error reason string if validation fails, null if valid
- */
-export function validateCredentialTypes(
-  authEntries: xdr.SorobanAuthorizationEntry[],
-): string | null {
+  // Validate credential types and sub-invocations in a single loop
   for (const authEntry of authEntries) {
     try {
       const credentials = authEntry.credentials();
       const credentialsType = credentials.switch().name;
 
+      // All entries must use sorobanCredentialsAddress
       if (credentialsType !== "sorobanCredentialsAddress") {
         console.error(
           `Unsupported credential type: ${credentialsType}. Only sorobanCredentialsAddress is allowed.`,
         );
         return "invalid_exact_stellar_payload_unsupported_credential_type";
       }
+
+      // No sub-invocations allowed
+      const subInvocations = authEntry.rootInvocation().subInvocations();
+      if (subInvocations.length > 0) {
+        console.error(
+          `Security violation: auth entry has ${subInvocations.length} sub-invocation(s)`,
+        );
+        return "invalid_exact_stellar_payload_has_subinvocations";
+      }
     } catch (error) {
-      console.error("Error checking credential type in auth entry:", error);
+      console.error("Error validating auth entry:", error);
       return "invalid_exact_stellar_payload_unsupported_credential_type";
     }
   }
