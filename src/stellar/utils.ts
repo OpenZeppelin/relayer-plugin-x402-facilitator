@@ -77,14 +77,12 @@ export async function getEstimatedLedgerCloseTimeSeconds(
       return DEFAULT_ESTIMATED_LEDGER_SECONDS;
     }
 
-    const sorted = [...ledgers].sort((a, b) => a.sequence - b.sequence);
-
     let totalDelta = 0;
     let deltaCount = 0;
 
-    for (let i = 1; i < sorted.length; i++) {
-      const prevTime = parseInt(sorted[i - 1].ledgerCloseTime, 10);
-      const currTime = parseInt(sorted[i].ledgerCloseTime, 10);
+    for (let i = 1; i < ledgers.length; i++) {
+      const prevTime = parseInt(ledgers[i - 1].ledgerCloseTime, 10);
+      const currTime = parseInt(ledgers[i].ledgerCloseTime, 10);
 
       if (!isNaN(prevTime) && !isNaN(currTime) && currTime > prevTime) {
         totalDelta += currTime - prevTime;
