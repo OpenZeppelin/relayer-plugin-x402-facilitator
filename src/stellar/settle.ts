@@ -15,7 +15,7 @@
  */
 import { Address, Operation, Transaction, xdr } from "@stellar/stellar-sdk";
 import {
-  ExactStellarPayload,
+  ExactStellarPayloadV2,
   NetworkConfig,
   PaymentRequirements,
   SettleRequest,
@@ -24,6 +24,7 @@ import {
 import type { PluginAPI, Relayer } from "@openzeppelin/relayer-sdk";
 import { ScVal, StellarTransactionResponse } from "@openzeppelin/relayer-sdk";
 import {
+  DEFAULT_TIMEOUT_SECONDS,
   getNetworkPassphrase,
   mapRelayerNetworkToStellar,
   networksMatch,
@@ -39,8 +40,6 @@ type ErrorReason =
   | "settle_exact_stellar_network_mismatch"
   | "settle_channel_service_failed"
   | "unexpected_settle_error";
-
-const DEFAULT_TIMEOUT_SECONDS = 30;
 
 /**
  * Channel service response type
@@ -259,7 +258,7 @@ export async function settle(
   // Extract network from accepted field
   if (!paymentPayload.accepted) {
     return errorResponse(
-      "invalid_exact_stellar_payload_malformed - missing accepted field",
+      "invalid_exact_stellar_payload_malformed",
       "",
     );
   }
@@ -304,7 +303,7 @@ export async function settle(
     payer = verifyResult.payer;
 
     // 2. Extract and parse the user-signed transaction XDR
-    const stellarPayload = paymentPayload.payload as ExactStellarPayload;
+    const stellarPayload = paymentPayload.payload as ExactStellarPayloadV2;
     const networkPassphrase = getNetworkPassphrase(paymentRequirements.network);
     const transaction = new Transaction(
       stellarPayload.transaction,

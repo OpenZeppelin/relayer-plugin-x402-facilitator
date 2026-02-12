@@ -7,6 +7,7 @@ export type TxBuildOptions = {
   signatures?: any[];
   source?: string;
   opSource?: string;
+  fee?: string;
   funcOverrides?: Partial<{
     contractAddress: () => string;
     functionName: () => Buffer;
@@ -31,6 +32,7 @@ export function buildInvokeTxBase64(options: TxBuildOptions = {}): string {
     signatures = [],
     source = "CLIENT_SOURCE",
     opSource,
+    fee = "100000",
     funcOverrides,
   } = options;
 
@@ -61,6 +63,7 @@ export function buildInvokeTxBase64(options: TxBuildOptions = {}): string {
     operations: [operation],
     signatures,
     source,
+    fee,
   };
 
   // Store in global for mock to access
@@ -126,6 +129,7 @@ export function buildPaymentRequirementsV2(
     payTo: "G-PAYEE",
     maxTimeoutSeconds: 30,
     asset: "ASSET_CONTRACT",
+    extra: { areFeesSponsored: true },
     ...overrides,
   };
 }

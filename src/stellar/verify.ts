@@ -24,18 +24,20 @@ import {
   scValToNative,
 } from "@stellar/stellar-sdk";
 import {
-  ExactStellarPayload,
+  ExactStellarPayloadV2,
   NetworkConfig,
   VerifyRequest,
   VerifyResponse,
 } from "../types";
 import {
+  DEFAULT_TIMEOUT_SECONDS,
   getNetworkPassphrase,
   getSignedAddressesFromAuthEntries,
+  isValidStellarNetwork,
   mapRelayerNetworkToStellar,
   networksMatch,
+  validateAuthEntries,
   validateAuthEntryExpirations,
-  validateFacilitatorNotInAuth,
   validateSimulationEvents,
 } from "./utils";
 
@@ -56,6 +58,10 @@ type ErrorReason =
   | "invalid_exact_stellar_payload_unsafe_tx_or_op_source"
   | "invalid_exact_stellar_payload_unsafe_from_address"
   | "invalid_exact_stellar_payload_facilitator_in_auth"
+  | "invalid_exact_stellar_payload_has_subinvocations"
+  | "invalid_exact_stellar_payload_no_transfer_events"
+  | "invalid_exact_stellar_payload_event_not_transfer"
+  | "invalid_exact_stellar_payload_event_missing_contract_id"
   | "invalid_exact_stellar_payload_unexpected_balance_changes"
   | "invalid_exact_stellar_payload_has_envelope_signatures"
   | "invalid_exact_stellar_payload_missing_auth_entries"
@@ -63,6 +69,9 @@ type ErrorReason =
   | "invalid_exact_stellar_payload_unsigned_auth_entry"
   | "invalid_exact_stellar_payload_auth_expiration_too_far"
   | "invalid_exact_stellar_payload_auth_already_expired"
+  | "invalid_exact_stellar_payload_unsupported_credential_type"
+  | "invalid_exact_stellar_payload_fee_below_minimum"
+  | "invalid_exact_stellar_payload_fee_exceeds_maximum"
   | "verify_network_mismatch"
   | "unexpected_verify_error"
   | "unsupported_asset";
@@ -94,14 +103,12 @@ export async function verify(
 
     // 1. Validate protocol version - only v2 is supported
     if (paymentPayload.x402Version !== 2) {
-      return invalidResponse(
-        "invalid_x402_version - only x402 v2 is supported.",
-      );
+      return invalidResponse("invalid_x402_version");
     }
 
     // Extract scheme and network from accepted field
     if (!paymentPayload.accepted) {
-      return invalidResponse("invalid_x402_version - missing accepted field");
+      return invalidResponse("invalid_x402_version");
     }
 
     const scheme = paymentPayload.accepted.scheme;
@@ -114,6 +121,11 @@ export async function verify(
     // Validate requirements.scheme is also "exact"
     if (paymentRequirements.scheme !== "exact") {
       return invalidResponse("invalid_scheme");
+    }
+
+    // Validate network is a recognized CAIP-2 Stellar network identifier
+    if (!isValidStellarNetwork(paymentRequirements.network)) {
+      return invalidResponse("invalid_network");
     }
 
     // Validate network matches between accepted, requirements, and config
@@ -142,7 +154,7 @@ export async function verify(
     }
 
     // 2. Parse and decode transaction
-    const stellarPayload = paymentPayload.payload as ExactStellarPayload;
+    const stellarPayload = paymentPayload.payload as ExactStellarPayloadV2;
     if (!stellarPayload.transaction) {
       return invalidResponse("invalid_exact_stellar_payload_malformed");
     }
@@ -235,7 +247,7 @@ export async function verify(
     // Validate amount (v2 uses amount field)
     if (!paymentRequirements.amount) {
       return invalidResponse(
-        "invalid_exact_stellar_payload_wrong_amount - missing amount",
+        "invalid_exact_stellar_payload_wrong_amount",
         fromAddress,
       );
     }
@@ -248,7 +260,11 @@ export async function verify(
     }
 
     // 6. Ensure transaction envelope signatures are empty
-    // The relayer will rebuild the transaction with its own source account
+    // The relayer will rebuild the transaction with its own source account.
+    // NOTE: This check enforces facilitator-sponsored fees (current spec).
+    // A future spec revision may allow client-sponsored fees, in which case
+    // the envelope will carry the client's signature and this check must be
+    // revisited.
     if (transaction.signatures.length > 0) {
       console.error(
         "Transaction has envelope signatures, expected empty for relayer rebuild",
@@ -268,6 +284,15 @@ export async function verify(
         "invalid_exact_stellar_payload_missing_auth_entries",
         fromAddress,
       );
+    }
+
+    // Validate auth entries: credential types, facilitator not in auth, no sub-invocations
+    const authEntriesError = validateAuthEntries(
+      authEntries,
+      relayerInfo.address,
+    );
+    if (authEntriesError) {
+      return invalidResponse(authEntriesError, fromAddress);
     }
 
     // Check signatures in the auth entries attached to the operation
@@ -304,17 +329,8 @@ export async function verify(
       );
     }
 
-    // Security check: facilitator address MUST NOT appear in any authorization entries
-    const facilitatorError = validateFacilitatorNotInAuth(
-      authEntries,
-      relayerInfo.address,
-    );
-    if (facilitatorError) {
-      return invalidResponse(facilitatorError, fromAddress);
-    }
-
     // 8. Validate auth entry expiration ledgers are within allowed window
-    const maxTimeoutSeconds = paymentRequirements.maxTimeoutSeconds ?? 30;
+    const maxTimeoutSeconds = paymentRequirements.maxTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
     const expirationResult = await validateAuthEntryExpirations(
       authEntries,
       relayer,
@@ -364,7 +380,39 @@ export async function verify(
       );
     }
 
-    // 11. Validate simulation events show only expected balance changes
+    // 11. Validate transaction fee bounds
+    const successSimResponse =
+      simulateResponse as rpc.Api.SimulateTransactionSuccessResponse;
+    const minResourceFee = successSimResponse.minResourceFee;
+    const transactionFee = transaction.fee;
+
+    if (minResourceFee && transactionFee) {
+      if (BigInt(transactionFee) < BigInt(minResourceFee)) {
+        console.error(
+          `Transaction fee ${transactionFee} is below minimum resource fee ${minResourceFee}`,
+        );
+        return invalidResponse(
+          "invalid_exact_stellar_payload_fee_below_minimum",
+          fromAddress,
+        );
+      }
+    }
+
+    if (transactionFee && networkConfig.maxTransactionFeeStroops) {
+      if (
+        BigInt(transactionFee) > BigInt(networkConfig.maxTransactionFeeStroops)
+      ) {
+        console.error(
+          `Transaction fee ${transactionFee} exceeds maximum allowed fee ${networkConfig.maxTransactionFeeStroops}`,
+        );
+        return invalidResponse(
+          "invalid_exact_stellar_payload_fee_exceeds_maximum",
+          fromAddress,
+        );
+      }
+    }
+
+    // 12. Validate simulation events show only expected balance changes
     // Must emit events showing only the expected balance changes
     // (recipient increase, payer decrease) for requirements.amount
     const simulationEvents =
@@ -372,28 +420,30 @@ export async function verify(
       [];
 
     if (simulationEvents.length === 0) {
-      console.warn(
-        "No events in simulation response - skipping event validation",
+      return invalidResponse(
+        "invalid_exact_stellar_payload_no_transfer_events",
+        fromAddress,
       );
-    } else {
-      const eventValidation = validateSimulationEvents(
-        simulationEvents,
-        paymentRequirements.asset, // token contract
-        fromAddress, // payer
-        paymentRequirements.payTo, // recipient
-        requiredAmount, // exact amount
-      );
+    }
 
-      if (!eventValidation.isValid) {
-        console.error(
-          "Simulation event validation failed:",
-          eventValidation.error,
-        );
-        return invalidResponse(
+    const eventValidation = validateSimulationEvents(
+      simulationEvents,
+      paymentRequirements.asset, // token contract
+      fromAddress, // payer
+      paymentRequirements.payTo, // recipient
+      requiredAmount, // exact amount
+    );
+
+    if (!eventValidation.isValid) {
+      console.error(
+        "Simulation event validation failed:",
+        eventValidation.error,
+      );
+      return invalidResponse(
+        eventValidation.errorCode ||
           "invalid_exact_stellar_payload_unexpected_balance_changes",
-          fromAddress,
-        );
-      }
+        fromAddress,
+      );
     }
 
     console.log("Verification successful for payer:", fromAddress);

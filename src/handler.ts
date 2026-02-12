@@ -129,9 +129,6 @@ async function handleSettle(
   }
 }
 
-// Maximum ledger offset for Stellar transactions (approximately 1 minute with ~5 second ledger times)
-const STELLAR_MAX_LEDGER_OFFSET = 12;
-
 /**
  * Supported endpoint handler
  * Returns supported payment kinds in v2 format with version-grouped kinds, signers, and extensions
@@ -156,11 +153,7 @@ async function handleSupported(
         );
       }
 
-      // For Stellar networks, include maxLedgerOffset as a static policy value
-      const extra =
-        networkConfig.type === "stellar"
-          ? { maxLedgerOffset: STELLAR_MAX_LEDGER_OFFSET }
-          : {};
+      const extra = { areFeesSponsored: true };
 
       return {
         networkConfig,

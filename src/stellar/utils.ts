@@ -8,6 +8,116 @@ import { Relayer, ScVal } from "@openzeppelin/relayer-sdk";
 // Default estimated ledger time in seconds (Stellar averages ~5-6 seconds per ledger)
 const DEFAULT_ESTIMATED_LEDGER_SECONDS = 5;
 
+// Default timeout in seconds for payment operations
+export const DEFAULT_TIMEOUT_SECONDS = 60;
+const LEDGER_SAMPLE_SIZE = 10;
+
+/**
+ * Estimates the average ledger close time by sampling recent ledgers.
+ *
+ * Calls the Soroban RPC `getLedgers` method to fetch recent ledgers,
+ * then calculates the average time between consecutive ledger closings.
+ * Falls back to DEFAULT_ESTIMATED_LEDGER_SECONDS (5s) if the RPC call
+ * fails, returns insufficient data, or the calculated average is invalid.
+ *
+ * @param relayer - Relayer instance for RPC calls
+ * @returns Estimated ledger close time in seconds
+ */
+export async function getEstimatedLedgerCloseTimeSeconds(
+  relayer: Relayer,
+): Promise<number> {
+  try {
+    const latestLedgerResponse = await relayer.rpc({
+      method: "getLatestLedger",
+      id: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
+      jsonrpc: "2.0",
+      params: {},
+    });
+
+    if (latestLedgerResponse.error || !latestLedgerResponse.result) {
+      console.debug(
+        "Failed to get latest ledger for estimation, using default",
+      );
+      return DEFAULT_ESTIMATED_LEDGER_SECONDS;
+    }
+
+    const latestSequence = (
+      latestLedgerResponse.result as { sequence: number }
+    ).sequence;
+    const startLedger = Math.max(1, latestSequence - LEDGER_SAMPLE_SIZE);
+
+    const getLedgersResponse = await relayer.rpc({
+      method: "getLedgers",
+      id: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
+      jsonrpc: "2.0",
+      params: {
+        startLedger,
+        pagination: {
+          limit: LEDGER_SAMPLE_SIZE,
+        },
+      },
+    });
+
+    if (getLedgersResponse.error || !getLedgersResponse.result) {
+      console.debug(
+        "getLedgers RPC failed, using default ledger time estimate",
+      );
+      return DEFAULT_ESTIMATED_LEDGER_SECONDS;
+    }
+
+    const result = getLedgersResponse.result as {
+      ledgers?: Array<{ sequence: number; ledgerCloseTime: string }>;
+    };
+
+    const ledgers = result.ledgers;
+    if (!ledgers || ledgers.length < 2) {
+      console.debug(
+        "Insufficient ledger data for estimation, using default",
+      );
+      return DEFAULT_ESTIMATED_LEDGER_SECONDS;
+    }
+
+    let totalDelta = 0;
+    let deltaCount = 0;
+
+    for (let i = 1; i < ledgers.length; i++) {
+      const prevTime = parseInt(ledgers[i - 1].ledgerCloseTime, 10);
+      const currTime = parseInt(ledgers[i].ledgerCloseTime, 10);
+
+      if (!isNaN(prevTime) && !isNaN(currTime) && currTime > prevTime) {
+        totalDelta += currTime - prevTime;
+        deltaCount++;
+      }
+    }
+
+    if (deltaCount === 0) {
+      console.debug("No valid ledger time deltas found, using default");
+      return DEFAULT_ESTIMATED_LEDGER_SECONDS;
+    }
+
+    const averageCloseTime = totalDelta / deltaCount;
+
+    if (averageCloseTime <= 0 || !isFinite(averageCloseTime)) {
+      console.debug(
+        `Calculated average ledger time ${averageCloseTime}s is invalid, using default`,
+      );
+      return DEFAULT_ESTIMATED_LEDGER_SECONDS;
+    }
+
+    console.debug(
+      `Estimated ledger close time: ${averageCloseTime.toFixed(2)}s (from ${deltaCount} samples)`,
+    );
+    return averageCloseTime;
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : String(error);
+    console.debug(
+      `Error estimating ledger close time: ${errorMessage}, using default`,
+    );
+    return DEFAULT_ESTIMATED_LEDGER_SECONDS;
+  }
+}
+
 /**
  * Gets the network passphrase for a given network
  */
@@ -30,7 +140,18 @@ export function getNetworkPassphrase(network: string): string {
  * Maps relayer network name to Stellar network format
  */
 export function mapRelayerNetworkToStellar(relayerNetwork: string): string {
-  return relayerNetwork === "testnet" ? "stellar:testnet" : "stellar";
+  return relayerNetwork === "testnet" ? "stellar:testnet" : "stellar:pubnet";
+}
+
+const VALID_STELLAR_NETWORKS = new Set(["stellar:pubnet", "stellar:testnet"]);
+
+/**
+ * Validates that a network identifier is a recognized CAIP-2 Stellar network.
+ *
+ * Per spec, network identifiers must use CAIP-2 format: "stellar:pubnet" or "stellar:testnet".
+ */
+export function isValidStellarNetwork(network: string): boolean {
+  return VALID_STELLAR_NETWORKS.has(network);
 }
 
 /**
@@ -188,30 +309,62 @@ export function getAllAddressesFromAuthEntries(
 }
 
 /**
- * Validates that the facilitator address does not appear in any auth entries.
+ * Validates auth entries for security and correctness in a single pass.
  *
- * Security check: The facilitator MUST NOT appear in any authorization entries.
- * This prevents the facilitator from being tricked into authorizing unintended actions.
+ * Performs the following checks:
+ * 1. Facilitator address MUST NOT appear in any authorization entries
+ *    (prevents the facilitator from being tricked into authorizing unintended actions)
+ * 2. All entries MUST use `sorobanCredentialsAddress` credential type
+ *    (other credential types like `sorobanCredentialsSourceAccount` are rejected per spec)
+ * 3. No entries may contain sub-invocations
+ *    (sub-invocations could authorize additional token transfers or operations)
  *
  * @param authEntries - Authorization entries from the transaction
  * @param facilitatorAddress - The facilitator/relayer address to check against
  * @returns Error reason string if validation fails, null if valid
  */
-export function validateFacilitatorNotInAuth(
+export function validateAuthEntries(
   authEntries: xdr.SorobanAuthorizationEntry[],
   facilitatorAddress: string | undefined,
 ): string | null {
-  if (!facilitatorAddress) {
-    return null; // No facilitator address to check
+  // Check facilitator address is not in any auth entry
+  if (facilitatorAddress) {
+    const allAuthAddresses = getAllAddressesFromAuthEntries(authEntries);
+
+    if (allAuthAddresses.includes(facilitatorAddress)) {
+      console.error(
+        `Security violation: facilitator address ${facilitatorAddress} found in auth entries`,
+      );
+      return "invalid_exact_stellar_payload_facilitator_in_auth";
+    }
   }
 
-  const allAuthAddresses = getAllAddressesFromAuthEntries(authEntries);
+  // Validate credential types and sub-invocations in a single loop
+  for (const authEntry of authEntries) {
+    try {
+      const credentials = authEntry.credentials();
+      const credentialsType = credentials.switch().name;
 
-  if (allAuthAddresses.includes(facilitatorAddress)) {
-    console.error(
-      `Security violation: facilitator address ${facilitatorAddress} found in auth entries`,
-    );
-    return "invalid_exact_stellar_payload_facilitator_in_auth";
+      // All entries must use sorobanCredentialsAddress
+      if (credentialsType !== "sorobanCredentialsAddress") {
+        console.error(
+          `Unsupported credential type: ${credentialsType}. Only sorobanCredentialsAddress is allowed.`,
+        );
+        return "invalid_exact_stellar_payload_unsupported_credential_type";
+      }
+
+      // No sub-invocations allowed
+      const subInvocations = authEntry.rootInvocation().subInvocations();
+      if (subInvocations.length > 0) {
+        console.error(
+          `Security violation: auth entry has ${subInvocations.length} sub-invocation(s)`,
+        );
+        return "invalid_exact_stellar_payload_has_subinvocations";
+      }
+    } catch (error) {
+      console.error("Error validating auth entry:", error);
+      return "invalid_exact_stellar_payload_unsupported_credential_type";
+    }
   }
 
   return null;
@@ -276,11 +429,22 @@ export interface TransferEvent {
 }
 
 /**
+ * Result of parsing transfer events from simulation, including
+ * detection of non-transfer contract events.
+ */
+export interface ParseTransferEventsResult {
+  transferEvents: TransferEvent[];
+  nonTransferContractEventDetected: boolean;
+  missingContractIdDetected: boolean;
+}
+
+/**
  * Result of validating simulation events
  */
 export interface EventValidationResult {
   isValid: boolean;
   error?: string;
+  errorCode?: string;
   transferEvents: TransferEvent[];
 }
 
@@ -292,12 +456,14 @@ export interface EventValidationResult {
  * - Data: i128(amount)
  *
  * @param diagnosticEvents - Decoded DiagnosticEvent array from simulation response
- * @returns Array of parsed transfer events
+ * @returns Parsed transfer events and whether non-transfer contract events were detected
  */
 export function parseTransferEventsFromSimulation(
   diagnosticEvents: xdr.DiagnosticEvent[] | string[],
-): TransferEvent[] {
+): ParseTransferEventsResult {
   const transferEvents: TransferEvent[] = [];
+  let nonTransferContractEventDetected = false;
+  let missingContractIdDetected = false;
 
   for (let i = 0; i < diagnosticEvents.length; i++) {
     const rawEvent = diagnosticEvents[i];
@@ -314,9 +480,20 @@ export function parseTransferEventsFromSimulation(
 
       const event = diagnosticEvent.event();
 
-      // Skip events without contract ID (system events)
+      // Get event type - we only care about contract events
+      // ContractEventType: 0 = System, 1 = Contract, 2 = Diagnostic
+      const eventTypeName = event.type().name;
+
+      if (eventTypeName !== "contract") {
+        // Not a contract event, skip system and diagnostic events
+        // (these legitimately may not have a contract ID)
+        continue;
+      }
+
+      // For contract events, contract ID is required
       const contractIdBuffer = event.contractId();
       if (!contractIdBuffer) {
+        missingContractIdDetected = true;
         continue;
       }
 
@@ -326,15 +503,6 @@ export function parseTransferEventsFromSimulation(
         Buffer.from(contractIdBuffer as unknown as Uint8Array),
       );
 
-      // Get event type - we care about contract events
-      // ContractEventType: 0 = System, 1 = Contract, 2 = Diagnostic
-      const eventTypeName = event.type().name;
-
-      if (eventTypeName !== "contract") {
-        // Not a contract event, skip system and diagnostic events
-        continue;
-      }
-
       const body = event.body().v0();
       const topics = body.topics();
       const data = body.data();
@@ -342,17 +510,20 @@ export function parseTransferEventsFromSimulation(
       // Check if this is a transfer event
       // Topics should be: [Symbol("transfer"), Address(from), Address(to)]
       if (topics.length < 3) {
+        nonTransferContractEventDetected = true;
         continue;
       }
 
       // First topic should be the symbol "transfer"
       const firstTopic = topics[0];
       if (firstTopic.switch().name !== "scvSymbol") {
+        nonTransferContractEventDetected = true;
         continue;
       }
 
       const eventName = firstTopic.sym().toString();
       if (eventName !== "transfer") {
+        nonTransferContractEventDetected = true;
         continue;
       }
 
@@ -367,12 +538,14 @@ export function parseTransferEventsFromSimulation(
       if (fromTopic.switch().name === "scvAddress") {
         from = Address.fromScVal(fromTopic).toString();
       } else {
+        nonTransferContractEventDetected = true;
         continue; // Not a standard transfer event format
       }
 
       if (toTopic.switch().name === "scvAddress") {
         to = Address.fromScVal(toTopic).toString();
       } else {
+        nonTransferContractEventDetected = true;
         continue; // Not a standard transfer event format
       }
 
@@ -388,6 +561,7 @@ export function parseTransferEventsFromSimulation(
         } else if (typeof nativeValue === "number") {
           amount = BigInt(nativeValue);
         } else {
+          nonTransferContractEventDetected = true;
           continue; // Can't parse amount
         }
       }
@@ -407,7 +581,11 @@ export function parseTransferEventsFromSimulation(
     }
   }
 
-  return transferEvents;
+  return {
+    transferEvents,
+    nonTransferContractEventDetected,
+    missingContractIdDetected,
+  };
 }
 
 /**
@@ -431,7 +609,29 @@ export function validateSimulationEvents(
   expectedTo: string,
   expectedAmount: bigint,
 ): EventValidationResult {
-  const transferEvents = parseTransferEventsFromSimulation(diagnosticEvents);
+  const {
+    transferEvents,
+    nonTransferContractEventDetected,
+    missingContractIdDetected,
+  } = parseTransferEventsFromSimulation(diagnosticEvents);
+
+  if (missingContractIdDetected) {
+    return {
+      isValid: false,
+      error: "Simulation event missing contract ID",
+      errorCode: "invalid_exact_stellar_payload_event_missing_contract_id",
+      transferEvents,
+    };
+  }
+
+  if (nonTransferContractEventDetected) {
+    return {
+      isValid: false,
+      error: "Non-transfer contract event detected",
+      errorCode: "invalid_exact_stellar_payload_event_not_transfer",
+      transferEvents,
+    };
+  }
 
   // Filter transfer events for the expected token contract
   const tokenTransferEvents = transferEvents.filter(
@@ -553,9 +753,11 @@ export async function validateAuthEntryExpirations(
   const currentLedger = (latestLedgerResponse.result as { sequence: number })
     .sequence;
 
-  // Calculate max allowed expiration: currentLedger + ceil(maxTimeoutSeconds / estimatedLedgerSeconds)
+  // Calculate max allowed expiration using dynamic ledger time estimation
+  const estimatedLedgerSeconds =
+    await getEstimatedLedgerCloseTimeSeconds(relayer);
   const maxLedgerOffset = Math.ceil(
-    maxTimeoutSeconds / DEFAULT_ESTIMATED_LEDGER_SECONDS,
+    maxTimeoutSeconds / estimatedLedgerSeconds,
   );
   const maxAllowedExpiration = currentLedger + maxLedgerOffset;
 

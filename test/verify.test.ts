@@ -16,6 +16,7 @@ vi.mock("@stellar/stellar-sdk", () => {
     operations: any[];
     signatures: any[];
     source: string | undefined;
+    fee: string;
 
     constructor(base64: string, _networkPassphrase?: string) {
       const raw = JSON.parse(Buffer.from(base64, "base64").toString("utf8"));
@@ -26,11 +27,13 @@ vi.mock("@stellar/stellar-sdk", () => {
         this.operations = txData.operations;
         this.signatures = txData.signatures;
         this.source = txData.source;
+        this.fee = txData.fee ?? "100000";
       } else {
         // Fallback for non-test transactions
         this.operations = raw.operations ?? [];
         this.signatures = raw.signatures ?? [];
         this.source = raw.source;
+        this.fee = raw.fee ?? "100000";
       }
     }
   }
@@ -78,7 +81,9 @@ const makeApi = (overrides: Partial<any> = {}) =>
           return Promise.resolve({ result: { sequence: 1000 } });
         }
         // simulateTransaction
-        return Promise.resolve({ result: {} });
+        return Promise.resolve({
+          result: { events: ["mock_event"], minResourceFee: "50000" },
+        });
       }),
       ...overrides,
     }),
@@ -154,7 +159,7 @@ describe("stellar verify", () => {
 
     // v1 should be rejected
     expect(result.isValid).toBe(false);
-    expect(result.invalidReason).toContain("only x402 v2 is supported");
+    expect(result.invalidReason).toBe("invalid_x402_version");
   });
 
   test("rejects v1 x402 version", async () => {
@@ -169,8 +174,7 @@ describe("stellar verify", () => {
     );
 
     expect(result.isValid).toBe(false);
-    expect(result.invalidReason).toContain("invalid_x402_version");
-    expect(result.invalidReason).toContain("only x402 v2 is supported");
+    expect(result.invalidReason).toBe("invalid_x402_version");
   });
 
   test("validates v2 payload successfully", async () => {
@@ -189,9 +193,18 @@ describe("stellar verify", () => {
     });
 
     const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+    vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
+      isValid: true,
+      transferEvents: [],
     });
 
     const result = await verify(
@@ -221,7 +234,7 @@ describe("stellar verify", () => {
     );
 
     expect(result.isValid).toBe(false);
-    expect(result.invalidReason).toContain("missing accepted field");
+    expect(result.invalidReason).toBe("invalid_x402_version");
   });
 
   test("rejects invalid scheme", async () => {
@@ -237,6 +250,36 @@ describe("stellar verify", () => {
 
     expect(result.isValid).toBe(false);
     expect(result.invalidReason).toBe("invalid_scheme");
+  });
+
+  test("rejects non-CAIP-2 network identifier", async () => {
+    const tx = buildInvokeTxBase64();
+    const payload = buildPaymentPayloadV2(tx, { network: "testnet" });
+    const reqs = buildPaymentRequirementsV2({ network: "testnet" });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      makeApi(),
+      { ...networkConfig, network: "testnet" },
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe("invalid_network");
+  });
+
+  test("rejects unknown CAIP-2 network", async () => {
+    const tx = buildInvokeTxBase64();
+    const payload = buildPaymentPayloadV2(tx, { network: "stellar:devnet" });
+    const reqs = buildPaymentRequirementsV2({ network: "stellar:devnet" });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      makeApi(),
+      { ...networkConfig, network: "stellar:devnet" },
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe("invalid_network");
   });
 
   test("rejects network mismatch between payload and requirements", async () => {
@@ -344,6 +387,39 @@ describe("stellar verify", () => {
     );
   });
 
+  test("rejects auth entries with unsupported credential type", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(
+      "invalid_exact_stellar_payload_unsupported_credential_type",
+    );
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_unsupported_credential_type",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
   test("rejects transaction with unsigned auth entries", async () => {
     const tx = buildInvokeTxBase64({
       payer: "G-PAYER",
@@ -360,6 +436,7 @@ describe("stellar verify", () => {
     });
 
     const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: [],
       unsignedAddresses: ["G-PAYER"],
@@ -458,11 +535,11 @@ describe("stellar verify", () => {
     });
 
     const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    vi.spyOn(utils, "validateFacilitatorNotInAuth").mockReturnValue(null);
     // Mock validateAuthEntryExpirations to return auth already expired error
     vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
       isValid: false,
@@ -502,11 +579,11 @@ describe("stellar verify", () => {
     });
 
     const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    vi.spyOn(utils, "validateFacilitatorNotInAuth").mockReturnValue(null);
     // Mock validateAuthEntryExpirations to return expiration too far error
     vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
       isValid: false,
@@ -546,14 +623,405 @@ describe("stellar verify", () => {
     });
 
     const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
       signedAddresses: ["G-PAYER"],
       unsignedAddresses: [],
     });
-    // Auth entry expires at ledger 1005, which is within the allowed window
-    vi.spyOn(utils, "getExpirationLedgersFromAuthEntries").mockReturnValue([
-      1005,
-    ]);
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+    vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
+      isValid: true,
+      transferEvents: [],
+    });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(true);
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("rejects transaction with sub-invocations in auth entries", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(
+      "invalid_exact_stellar_payload_has_subinvocations",
+    );
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_has_subinvocations",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("rejects simulation with zero events", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    // Override simulateTransaction to return no events
+    const api = makeApi({
+      rpc: vi.fn().mockImplementation((params: any) => {
+        if (params.method === "getLatestLedger") {
+          return Promise.resolve({ result: { sequence: 1000 } });
+        }
+        // simulateTransaction returns no events
+        return Promise.resolve({ result: {} });
+      }),
+    });
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_no_transfer_events",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("rejects simulation with non-transfer contract events", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+    vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
+      isValid: false,
+      error: "Non-transfer contract event detected",
+      errorCode: "invalid_exact_stellar_payload_event_not_transfer",
+      transferEvents: [],
+    });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_event_not_transfer",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("rejects simulation with missing contract ID in events", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+    vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
+      isValid: false,
+      error: "Simulation event missing contract ID",
+      errorCode: "invalid_exact_stellar_payload_event_missing_contract_id",
+      transferEvents: [],
+    });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_event_missing_contract_id",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("rejects transaction with fee below minimum resource fee", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+      fee: "1000",
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    // minResourceFee = 50000, transaction fee = 1000 -> should fail
+    const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_fee_below_minimum",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("rejects transaction with fee exceeding maximum cap", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+      fee: "200000",
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    const configWithMaxFee = {
+      ...networkConfig,
+      maxTransactionFeeStroops: "100000",
+    };
+
+    const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      configWithMaxFee,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_fee_exceeds_maximum",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("accepts transaction with fee exactly equal to minimum resource fee", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+      fee: "50000",
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+    vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
+      isValid: true,
+      transferEvents: [],
+    });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+
+    expect(result.isValid).toBe(true);
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("accepts transaction with fee within valid range", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+      fee: "75000",
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    const configWithMaxFee = {
+      ...networkConfig,
+      maxTransactionFeeStroops: "100000",
+    };
+
+    const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+    vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
+      isValid: true,
+      transferEvents: [],
+    });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      configWithMaxFee,
+    );
+
+    expect(result.isValid).toBe(true);
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("skips max fee check when maxTransactionFeeStroops not configured", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+      fee: "999999999",
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    // networkConfig has no maxTransactionFeeStroops, so max check should be skipped
+    const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+    vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
+      isValid: true,
+      transferEvents: [],
+    });
 
     const result = await verify(
       { paymentPayload: payload, paymentRequirements: reqs } as any,
