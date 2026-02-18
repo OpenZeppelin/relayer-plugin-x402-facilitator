@@ -128,7 +128,7 @@ Point the facilitator to your Relayer plugin URL and pass the Relayer API key vi
 
 ```test
 STELLAR_ADDRESS=
-FACILITATOR_URL=http://localhost:8080/api/v1/plugins/x402-facilitator/call
+FACILITATOR_URL=http://localhost:8080/api/v1/plugins/x402/call
 ```
 
 ```typescript
