@@ -1,6 +1,6 @@
 # x402 Facilitator Relayer Plugin
 
-OpenZeppelin Relayer plugin that implements the x402 facilitator API so you can serve x402 payments directly from a Relayer instance. Works with the Coinbase x402 ecosystem (e.g., `x402-express`) and exposes the expected `/verify`, `/settle`, and `/supported` endpoints under the Relayer plugin router.
+OpenZeppelin Relayer plugin that implements the x402 facilitator API so you can serve x402 payments directly from a Relayer instance. Works with the Coinbase x402 ecosystem (e.g., `@x402/express`) and exposes the expected `/verify`, `/settle`, and `/supported` endpoints under the Relayer plugin router.
 
 **This version supports x402 v2 specification.** For x402 v1 support, please use a previous version of this plugin (check git history for v1-compatible releases).
 
@@ -13,7 +13,7 @@ OpenZeppelin Relayer plugin that implements the x402 facilitator API so you can 
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 22.18+
 - pnpm 10+
 - An OpenZeppelin Relayer with at least one configured relayer account for each network you plan to serve
 
@@ -86,7 +86,7 @@ Each object in `config.networks`:
 
 ### Exposed routes
 
-All routes hang off the Relayer plugin call endpoint: `POST /api/v1/plugins/{plugin_id}/call{route}`.
+Routes are called through the Relayer plugin call endpoint: `POST /api/v1/plugins/{plugin_id}/call{route}`.
 
 - `/` or ``: info
 - `/verify`: x402 v2 verify
@@ -206,7 +206,7 @@ app.listen(4021, () => {
 - **Auth:** The plugin uses standard Relayer auth. Send `Authorization: Bearer <RELAYER_API_KEY>` to each endpoint.
 - **Verify:** `POST /api/v1/plugins/x402/call/verify`
 - **Settle:** `POST /api/v1/plugins/x402/call/settle`
-- **Supported:** `GET /api/v1/plugins/x402/call/supported`
+- **Supported:** `POST /api/v1/plugins/x402/call/supported` (or `GET` if `allow_get_invocation` is enabled)
 
 ## Development & testing
 
