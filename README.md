@@ -126,7 +126,7 @@ The `/supported` endpoint returns data in the following v2 format:
 
 Point the facilitator to your Relayer plugin URL and pass the Relayer API key via `createAuthHeaders`.
 
-```test
+```text
 STELLAR_ADDRESS=
 FACILITATOR_URL=http://localhost:8080/api/v1/plugins/x402/call
 ```
