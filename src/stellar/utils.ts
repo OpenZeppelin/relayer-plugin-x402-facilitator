@@ -4,6 +4,7 @@ import { Address, StrKey, scValToNative, xdr } from "@stellar/stellar-sdk";
  * Shared utility functions for Stellar payment processing
  */
 import { Relayer, ScVal } from "@openzeppelin/relayer-sdk";
+import type { VerifyRequest, SettleRequest } from "../types";
 
 // Default estimated ledger time in seconds (Stellar averages ~5-6 seconds per ledger)
 const DEFAULT_ESTIMATED_LEDGER_SECONDS = 5;
@@ -41,9 +42,8 @@ export async function getEstimatedLedgerCloseTimeSeconds(
       return DEFAULT_ESTIMATED_LEDGER_SECONDS;
     }
 
-    const latestSequence = (
-      latestLedgerResponse.result as { sequence: number }
-    ).sequence;
+    const latestSequence = (latestLedgerResponse.result as { sequence: number })
+      .sequence;
     const startLedger = Math.max(1, latestSequence - LEDGER_SAMPLE_SIZE);
 
     const getLedgersResponse = await relayer.rpc({
@@ -71,9 +71,7 @@ export async function getEstimatedLedgerCloseTimeSeconds(
 
     const ledgers = result.ledgers;
     if (!ledgers || ledgers.length < 2) {
-      console.debug(
-        "Insufficient ledger data for estimation, using default",
-      );
+      console.debug("Insufficient ledger data for estimation, using default");
       return DEFAULT_ESTIMATED_LEDGER_SECONDS;
     }
 
@@ -109,8 +107,7 @@ export async function getEstimatedLedgerCloseTimeSeconds(
     );
     return averageCloseTime;
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : String(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
     console.debug(
       `Error estimating ledger close time: ${errorMessage}, using default`,
     );
@@ -756,9 +753,7 @@ export async function validateAuthEntryExpirations(
   // Calculate max allowed expiration using dynamic ledger time estimation
   const estimatedLedgerSeconds =
     await getEstimatedLedgerCloseTimeSeconds(relayer);
-  const maxLedgerOffset = Math.ceil(
-    maxTimeoutSeconds / estimatedLedgerSeconds,
-  );
+  const maxLedgerOffset = Math.ceil(maxTimeoutSeconds / estimatedLedgerSeconds);
   const maxAllowedExpiration = currentLedger + maxLedgerOffset;
 
   // Extract expiration ledgers from auth entries
@@ -799,4 +794,101 @@ export async function validateAuthEntryExpirations(
   }
 
   return { isValid: true, currentLedger };
+}
+
+/**
+ * Validates common structure shared by verify and settle requests.
+ */
+function validateBaseRequestParams(params: unknown): params is {
+  paymentPayload: Record<string, unknown>;
+  paymentRequirements: Record<string, unknown>;
+} {
+  if (
+    typeof params !== "object" ||
+    params === null ||
+    !("paymentPayload" in params) ||
+    !("paymentRequirements" in params)
+  ) {
+    return false;
+  }
+
+  const { paymentPayload, paymentRequirements } = params as Record<
+    string,
+    unknown
+  >;
+
+  if (
+    typeof paymentPayload !== "object" ||
+    paymentPayload === null ||
+    typeof paymentRequirements !== "object" ||
+    paymentRequirements === null
+  ) {
+    return false;
+  }
+
+  const req = paymentRequirements as Record<string, unknown>;
+  const payload = paymentPayload as Record<string, unknown>;
+
+  if (!isValidPaymentRequirementsObject(req)) {
+    return false;
+  }
+
+  // Validate paymentPayload required fields
+  if (
+    typeof payload.x402Version !== "number" ||
+    typeof payload.accepted !== "object" ||
+    payload.accepted === null ||
+    typeof payload.payload !== "object" ||
+    payload.payload === null
+  ) {
+    return false;
+  }
+
+  // Validate accepted has full PaymentRequirements shape
+  const accepted = payload.accepted as Record<string, unknown>;
+  if (!isValidPaymentRequirementsObject(accepted)) {
+    return false;
+  }
+
+  return true;
+}
+
+function isValidPaymentRequirementsObject(
+  value: Record<string, unknown>,
+): boolean {
+  if (
+    typeof value.scheme !== "string" ||
+    typeof value.network !== "string" ||
+    typeof value.amount !== "string" ||
+    typeof value.payTo !== "string" ||
+    typeof value.asset !== "string" ||
+    typeof value.maxTimeoutSeconds !== "number"
+  ) {
+    return false;
+  }
+
+  if (typeof value.extra !== "object" || value.extra === null) {
+    return false;
+  }
+
+  const extra = value.extra as Record<string, unknown>;
+  return typeof extra.areFeesSponsored === "boolean";
+}
+
+/**
+ * Validates verify request params.
+ */
+export function validateVerifyRequest(
+  params: unknown,
+): params is VerifyRequest {
+  return validateBaseRequestParams(params);
+}
+
+/**
+ * Validates settle request params.
+ */
+export function validateSettleRequest(
+  params: unknown,
+): params is SettleRequest {
+  return validateBaseRequestParams(params);
 }

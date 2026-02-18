@@ -1,6 +1,6 @@
 # x402 Facilitator Relayer Plugin
 
-OpenZeppelin Relayer plugin that implements the x402 facilitator API so you can serve x402 payments directly from a Relayer instance. Works with the Coinbase x402 ecosystem (e.g., `x402-express`) and exposes the expected `/verify`, `/settle`, and `/supported` endpoints under the Relayer plugin router.
+OpenZeppelin Relayer plugin that implements the x402 facilitator API so you can serve x402 payments directly from a Relayer instance. Works with the Coinbase x402 ecosystem (e.g., `@x402/express`) and exposes the expected `/verify`, `/settle`, and `/supported` endpoints under the Relayer plugin router.
 
 **This version supports x402 v2 specification.** For x402 v1 support, please use a previous version of this plugin (check git history for v1-compatible releases).
 
@@ -13,7 +13,7 @@ OpenZeppelin Relayer plugin that implements the x402 facilitator API so you can 
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 22.18+
 - pnpm 10+
 - An OpenZeppelin Relayer with at least one configured relayer account for each network you plan to serve
 
@@ -54,6 +54,7 @@ export { handler } from "@openzeppelin/relayer-plugin-x402-facilitator";
       "emit_logs": false,
       "emit_traces": false,
       "raw_response": true,
+      "forward_logs": true,
       "allow_get_invocation": true,
       "timeout": 30,
       "config": {
@@ -85,7 +86,7 @@ Each object in `config.networks`:
 
 ### Exposed routes
 
-All routes hang off the Relayer plugin call endpoint: `POST /api/v1/plugins/{plugin_id}/call{route}`.
+Routes are called through the Relayer plugin call endpoint: `POST /api/v1/plugins/{plugin_id}/call{route}`.
 
 - `/` or ``: info
 - `/verify`: x402 v2 verify
@@ -110,7 +111,7 @@ The `/supported` endpoint returns data in the following v2 format:
       "scheme": "exact",
       "network": "stellar:testnet",
       "extra": {
-        "maxLedgerOffset": 12
+        "areFeesSponsored": true
       }
     }
   ],
@@ -125,50 +126,79 @@ The `/supported` endpoint returns data in the following v2 format:
 
 Point the facilitator to your Relayer plugin URL and pass the Relayer API key via `createAuthHeaders`.
 
-```ts
-import { paymentMiddleware } from "x402-express";
+```text
+STELLAR_ADDRESS=
+FACILITATOR_URL=http://localhost:8080/api/v1/plugins/x402/call
+```
 
-const facilitatorUrl = "https://your-relayer-host/api/v1/plugins/x402/call";
-const network = "stellar:testnet";
-const payTo = "G..."; // Payment receiver G address
+```typescript
+import { config } from "dotenv";
+import express from "express";
+import { paymentMiddleware, x402ResourceServer } from "@x402/express";
+import { ExactStellarScheme } from "@x402/stellar/exact/server";
+import { HTTPFacilitatorClient } from "@x402/core/server";
+config();
+
+const stellarAddress = process.env.STELLAR_ADDRESS as string | undefined;
+
+// Validate stellar address is provided
+if (!stellarAddress) {
+  console.error("❌ STELLAR_ADDRESS is required");
+  process.exit(1);
+}
+
+const facilitatorUrl = process.env.FACILITATOR_URL;
+if (!facilitatorUrl) {
+  console.error("❌ FACILITATOR_URL environment variable is required");
+  process.exit(1);
+}
+const facilitatorClient = new HTTPFacilitatorClient({
+  url: facilitatorUrl,
+  createAuthHeaders: async () => ({
+    // Use your Relayer API key for the plugin
+    verify: { Authorization: "Bearer RELAYER_API_KEY" },
+    settle: { Authorization: "Bearer RELAYER_API_KEY" },
+    supported: { Authorization: "Bearer RELAYER_API_KEY" },
+  }),
+});
+
+const app = express();
 
 app.use(
   paymentMiddleware(
-    payTo,
     {
       "GET /weather": {
-        // USDC amount in dollars
-        price: "$0.001",
-        network,
-      },
-      "/premium/*": {
-        // Define atomic amounts in any EIP-3009 token
-        price: {
-          amount: "0.1",
-          asset: {
-            address: "0xabc",
-            decimals: 18,
-            // omit eip712 for Solana
-            eip712: {
-              name: "WETH",
-              version: "1",
-            },
+        accepts: [
+          {
+            scheme: "exact",
+            price: "$0.001",
+            network: "stellar:testnet",
+            payTo: stellarAddress,
           },
-        },
-        network,
+        ],
+        description: "Weather data",
+        mimeType: "application/json",
       },
     },
-    {
-      url: facilitatorUrl,
-      createAuthHeaders: async () => ({
-        // Use your Relayer API key for the plugin
-        verify: { Authorization: "Bearer RELAYER_API_KEY" },
-        settle: { Authorization: "Bearer RELAYER_API_KEY" },
-        supported: { Authorization: "Bearer RELAYER_API_KEY" },
-      }),
-    },
+    new x402ResourceServer(facilitatorClient).register(
+      "stellar:testnet",
+      new ExactStellarScheme(),
+    ),
   ),
 );
+
+app.get("/weather", (req, res) => {
+  res.send({
+    report: {
+      weather: "sunny",
+      temperature: 70,
+    },
+  });
+});
+
+app.listen(4021, () => {
+  console.log(`Server listening at http://localhost:${4021}`);
+});
 ```
 
 ## Calls and auth
@@ -176,7 +206,7 @@ app.use(
 - **Auth:** The plugin uses standard Relayer auth. Send `Authorization: Bearer <RELAYER_API_KEY>` to each endpoint.
 - **Verify:** `POST /api/v1/plugins/x402/call/verify`
 - **Settle:** `POST /api/v1/plugins/x402/call/settle`
-- **Supported:** `POST /api/v1/plugins/x402/call/supported`
+- **Supported:** `POST /api/v1/plugins/x402/call/supported` (or `GET` if `allow_get_invocation` is enabled)
 
 ## Development & testing
 

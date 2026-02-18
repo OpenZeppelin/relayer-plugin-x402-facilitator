@@ -7,7 +7,7 @@
  * - POST /api/v1/plugins/{plugin_id}/call          -> Default handler (route = "")
  * - POST /api/v1/plugins/{plugin_id}/call/verify   -> Verify endpoint (route = "/verify")
  * - POST /api/v1/plugins/{plugin_id}/call/settle   -> Settle endpoint (route = "/settle")
- * - POST /api/v1/plugins/{plugin_id}/call/supported   -> Supported endpoint (route = "/supported")
+ * - POST /api/v1/plugins/{plugin_id}/call/supported   -> Supported endpoint (route = "/supported", GET also works with allow_get_invocation)
  */
 
 import { PluginAPI, PluginError } from "@openzeppelin/relayer-sdk";
@@ -27,6 +27,7 @@ import {
 } from "./stellar";
 
 import { getNetworkConfigByNetwork } from "./utils";
+import { validateVerifyRequest, validateSettleRequest } from "./stellar/utils";
 
 export async function handler(context: PluginContext) {
   const { route, params, api, config } = context;
@@ -84,22 +85,24 @@ async function handleVerify(
   api: PluginAPI,
   config: X402PluginConfig,
 ): Promise<VerifyResponse> {
+  if (!validateVerifyRequest(params)) {
+    return { isValid: false, invalidReason: "invalid_exact_payload_malformed" };
+  }
+
   const networkConfig = getNetworkConfigByNetwork(
     config,
     params.paymentRequirements.network,
   );
 
   if (!networkConfig) {
-    throw new Error(
-      `Network config not found for network: ${params.paymentRequirements.network}`,
-    );
+    return { isValid: false, invalidReason: "unsupported_network" };
   }
 
   switch (networkConfig.type) {
     case "stellar":
       return handleVerifyStellar(params, api, networkConfig);
     default:
-      throw new Error(`Unsupported network type: ${networkConfig.type}`);
+      return { isValid: false, invalidReason: "unsupported_network" };
   }
 }
 
@@ -111,21 +114,38 @@ async function handleSettle(
   api: PluginAPI,
   config: X402PluginConfig,
 ): Promise<SettleResponse> {
+  if (!validateSettleRequest(params)) {
+    return {
+      success: false,
+      errorReason: "invalid_exact_payload_malformed",
+      transaction: "",
+      network: "",
+    };
+  }
+
   const networkConfig = getNetworkConfigByNetwork(
     config,
     params.paymentRequirements.network,
   );
   if (!networkConfig) {
-    throw new Error(
-      `Network config not found for network: ${params.paymentRequirements.network}`,
-    );
+    return {
+      success: false,
+      errorReason: "unsupported_network",
+      transaction: "",
+      network: "",
+    };
   }
 
   switch (networkConfig.type) {
     case "stellar":
       return handleSettleStellar(params, api, networkConfig);
     default:
-      throw new Error(`Unsupported network type: ${networkConfig.type}`);
+      return {
+        success: false,
+        errorReason: "unsupported_network",
+        transaction: "",
+        network: "",
+      };
   }
 }
 
