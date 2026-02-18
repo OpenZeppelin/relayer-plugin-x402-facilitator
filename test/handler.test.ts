@@ -17,6 +17,33 @@ const networkConfig = {
   ],
 };
 
+function createValidParams(network: string) {
+  return {
+    paymentPayload: {
+      x402Version: 2,
+      accepted: {
+        scheme: "exact",
+        network,
+        amount: "1000",
+        payTo: "RECIPIENT",
+        asset: "ASSET_CONTRACT",
+        maxTimeoutSeconds: 60,
+        extra: { areFeesSponsored: true },
+      },
+      payload: { transaction: "base64tx" },
+    },
+    paymentRequirements: {
+      scheme: "exact",
+      network,
+      amount: "1000",
+      payTo: "RECIPIENT",
+      asset: "ASSET_CONTRACT",
+      maxTimeoutSeconds: 60,
+      extra: { areFeesSponsored: true },
+    },
+  };
+}
+
 function createApiWithLedger(sequence: number, address?: string): PluginAPI {
   return {
     useRelayer: () =>
@@ -58,10 +85,7 @@ describe("handler routing", () => {
 
     const result = await handler({
       route: "/verify",
-      params: {
-        paymentRequirements: { network: "stellar:testnet" },
-        paymentPayload: { network: "stellar:testnet" },
-      },
+      params: createValidParams("stellar:testnet"),
       api: {} as any,
       config: networkConfig,
       kv: {} as any,
@@ -84,10 +108,7 @@ describe("handler routing", () => {
 
     const result = await handler({
       route: "/settle",
-      params: {
-        paymentRequirements: { network: "stellar:testnet" },
-        paymentPayload: { network: "stellar:testnet" },
-      },
+      params: createValidParams("stellar:testnet"),
       api: {} as any,
       config: networkConfig,
       kv: {} as any,
@@ -163,44 +184,118 @@ describe("handler routing", () => {
     ).rejects.toThrow("X402 plugin config not found");
   });
 
-  test("/verify throws error for unsupported network", async () => {
-    await expect(
-      handler({
-        route: "/verify",
-        params: {
-          paymentRequirements: { network: "unsupported-network" },
-          paymentPayload: { network: "unsupported-network" },
-        },
-        api: {} as any,
-        config: networkConfig,
-        kv: {} as any,
-        headers: {},
-        method: "POST",
-        query: {},
-      } as any),
-    ).rejects.toThrow(
-      "Network config not found for network: unsupported-network",
-    );
+  test("/verify returns invalid for malformed payload (empty params)", async () => {
+    const result = await handler({
+      route: "/verify",
+      params: {},
+      api: {} as any,
+      config: networkConfig,
+      kv: {} as any,
+      headers: {},
+      method: "POST",
+      query: {},
+    } as any);
+    expect(result).toEqual({
+      isValid: false,
+      invalidReason: "invalid_exact_payload_malformed",
+    });
   });
 
-  test("/settle throws error for unsupported network", async () => {
-    await expect(
-      handler({
-        route: "/settle",
-        params: {
-          paymentRequirements: { network: "unsupported-network" },
-          paymentPayload: { network: "unsupported-network" },
-        },
-        api: {} as any,
-        config: networkConfig,
-        kv: {} as any,
-        headers: {},
-        method: "POST",
-        query: {},
-      } as any),
-    ).rejects.toThrow(
-      "Network config not found for network: unsupported-network",
-    );
+  test("/verify returns invalid for malformed payload (missing required fields)", async () => {
+    const result = await handler({
+      route: "/verify",
+      params: {
+        paymentPayload: { x402Version: 2 },
+        paymentRequirements: { network: "stellar:testnet" },
+      },
+      api: {} as any,
+      config: networkConfig,
+      kv: {} as any,
+      headers: {},
+      method: "POST",
+      query: {},
+    } as any);
+    expect(result).toEqual({
+      isValid: false,
+      invalidReason: "invalid_exact_payload_malformed",
+    });
+  });
+
+  test("/settle returns error for malformed payload (empty params)", async () => {
+    const result = await handler({
+      route: "/settle",
+      params: {},
+      api: {} as any,
+      config: networkConfig,
+      kv: {} as any,
+      headers: {},
+      method: "POST",
+      query: {},
+    } as any);
+    expect(result).toEqual({
+      success: false,
+      errorReason: "invalid_exact_payload_malformed",
+      transaction: "",
+      network: "",
+    });
+  });
+
+  test("/settle returns error for malformed payload (missing required fields)", async () => {
+    const result = await handler({
+      route: "/settle",
+      params: {
+        paymentPayload: { x402Version: 2 },
+        paymentRequirements: { network: "stellar:testnet" },
+      },
+      api: {} as any,
+      config: networkConfig,
+      kv: {} as any,
+      headers: {},
+      method: "POST",
+      query: {},
+    } as any);
+    expect(result).toEqual({
+      success: false,
+      errorReason: "invalid_exact_payload_malformed",
+      transaction: "",
+      network: "",
+    });
+  });
+
+  test("/verify returns invalid for unsupported network", async () => {
+    const result = await handler({
+      route: "/verify",
+      params: createValidParams("unsupported-network"),
+      api: {} as any,
+      config: networkConfig,
+      kv: {} as any,
+      headers: {},
+      method: "POST",
+      query: {},
+    } as any);
+    expect(result).toEqual({
+      isValid: false,
+      invalidReason: "unsupported_network",
+    });
+  });
+
+  test("/settle returns error for unsupported network", async () => {
+    const result = await handler({
+      route: "/settle",
+      params: createValidParams("unsupported-network"),
+      api: {} as any,
+      config: networkConfig,
+      kv: {} as any,
+      headers: {},
+      method: "POST",
+      query: {},
+    } as any);
+    expect(result).toEqual({
+      success: false,
+      errorReason: "unsupported_network",
+      transaction: "",
+      network: "",
+    });
   });
 
   test("/supported handles relayer info errors gracefully", async () => {

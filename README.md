@@ -152,12 +152,15 @@ if (!facilitatorUrl) {
   console.error("❌ FACILITATOR_URL environment variable is required");
   process.exit(1);
 }
-const facilitatorClient = new HTTPFacilitatorClient({ url: facilitatorUrl, createAuthHeaders: async () => ({
-  // Use your Relayer API key for the plugin
-  verify: { Authorization: "Bearer RELAYER_API_KEY" },
-  settle: { Authorization: "Bearer RELAYER_API_KEY" },
-  supported: { Authorization: "Bearer RELAYER_API_KEY" },
-})});
+const facilitatorClient = new HTTPFacilitatorClient({
+  url: facilitatorUrl,
+  createAuthHeaders: async () => ({
+    // Use your Relayer API key for the plugin
+    verify: { Authorization: "Bearer RELAYER_API_KEY" },
+    settle: { Authorization: "Bearer RELAYER_API_KEY" },
+    supported: { Authorization: "Bearer RELAYER_API_KEY" },
+  }),
+});
 
 const app = express();
 
@@ -177,9 +180,10 @@ app.use(
         mimeType: "application/json",
       },
     },
-    new x402ResourceServer(facilitatorClient)
-      .register("stellar:testnet", new ExactStellarScheme())
-
+    new x402ResourceServer(facilitatorClient).register(
+      "stellar:testnet",
+      new ExactStellarScheme(),
+    ),
   ),
 );
 

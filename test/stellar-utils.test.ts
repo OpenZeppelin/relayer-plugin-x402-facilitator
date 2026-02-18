@@ -4,6 +4,8 @@ import {
   getNetworkPassphrase,
   isValidStellarNetwork,
   mapRelayerNetworkToStellar,
+  validateVerifyRequest,
+  validateSettleRequest,
 } from "../src/stellar/utils";
 
 describe("stellar utils", () => {
@@ -147,6 +149,193 @@ describe("stellar utils", () => {
 
       const result = await getEstimatedLedgerCloseTimeSeconds(relayer);
       expect(result).toBe(5);
+    });
+  });
+
+  function createValidRequestParams() {
+    return {
+      paymentPayload: {
+        x402Version: 2,
+        accepted: {
+          scheme: "exact",
+          network: "stellar:testnet",
+          amount: "1000",
+          payTo: "RECIPIENT",
+          asset: "ASSET_CONTRACT",
+          maxTimeoutSeconds: 60,
+          extra: { areFeesSponsored: true },
+        },
+        payload: { transaction: "base64tx" },
+      },
+      paymentRequirements: {
+        scheme: "exact",
+        network: "stellar:testnet",
+        amount: "1000",
+        payTo: "RECIPIENT",
+        asset: "ASSET_CONTRACT",
+        maxTimeoutSeconds: 60,
+        extra: { areFeesSponsored: true },
+      },
+    };
+  }
+
+  describe("validateVerifyRequest", () => {
+    test("accepts valid request", () => {
+      expect(validateVerifyRequest(createValidRequestParams())).toBe(true);
+    });
+
+    test("rejects null", () => {
+      expect(validateVerifyRequest(null)).toBe(false);
+    });
+
+    test("rejects undefined", () => {
+      expect(validateVerifyRequest(undefined)).toBe(false);
+    });
+
+    test("rejects empty object", () => {
+      expect(validateVerifyRequest({})).toBe(false);
+    });
+
+    test("rejects missing paymentPayload", () => {
+      const { paymentPayload, ...rest } = createValidRequestParams();
+      expect(validateVerifyRequest(rest)).toBe(false);
+    });
+
+    test("rejects missing paymentRequirements", () => {
+      const { paymentRequirements, ...rest } = createValidRequestParams();
+      expect(validateVerifyRequest(rest)).toBe(false);
+    });
+
+    test("rejects null paymentPayload", () => {
+      const params = createValidRequestParams();
+      (params as any).paymentPayload = null;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects null paymentRequirements", () => {
+      const params = createValidRequestParams();
+      (params as any).paymentRequirements = null;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects missing paymentRequirements.scheme", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentRequirements as any).scheme;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects missing paymentRequirements.network", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentRequirements as any).network;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects missing paymentRequirements.amount", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentRequirements as any).amount;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects missing paymentRequirements.payTo", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentRequirements as any).payTo;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects missing paymentRequirements.asset", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentRequirements as any).asset;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects missing paymentRequirements.maxTimeoutSeconds", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentRequirements as any).maxTimeoutSeconds;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects non-number maxTimeoutSeconds", () => {
+      const params = createValidRequestParams();
+      (params.paymentRequirements as any).maxTimeoutSeconds = "60";
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects missing paymentPayload.x402Version", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentPayload as any).x402Version;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects missing paymentPayload.accepted", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentPayload as any).accepted;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects null paymentPayload.accepted", () => {
+      const params = createValidRequestParams();
+      (params.paymentPayload as any).accepted = null;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects missing paymentPayload.payload", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentPayload as any).payload;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects null paymentPayload.payload", () => {
+      const params = createValidRequestParams();
+      (params.paymentPayload as any).payload = null;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects missing accepted.scheme", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentPayload.accepted as any).scheme;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects missing accepted.network", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentPayload.accepted as any).network;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+  });
+
+  describe("validateSettleRequest", () => {
+    test("accepts valid request", () => {
+      expect(validateSettleRequest(createValidRequestParams())).toBe(true);
+    });
+
+    test("rejects null", () => {
+      expect(validateSettleRequest(null)).toBe(false);
+    });
+
+    test("rejects empty object", () => {
+      expect(validateSettleRequest({})).toBe(false);
+    });
+
+    test("rejects missing paymentPayload", () => {
+      const { paymentPayload, ...rest } = createValidRequestParams();
+      expect(validateSettleRequest(rest)).toBe(false);
+    });
+
+    test("rejects missing paymentRequirements", () => {
+      const { paymentRequirements, ...rest } = createValidRequestParams();
+      expect(validateSettleRequest(rest)).toBe(false);
+    });
+
+    test("rejects missing paymentRequirements.network", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentRequirements as any).network;
+      expect(validateSettleRequest(params)).toBe(false);
+    });
+
+    test("rejects missing paymentPayload.accepted", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentPayload as any).accepted;
+      expect(validateSettleRequest(params)).toBe(false);
     });
   });
 });

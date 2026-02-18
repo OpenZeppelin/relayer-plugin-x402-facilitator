@@ -257,10 +257,7 @@ export async function settle(
 
   // Extract network from accepted field
   if (!paymentPayload.accepted) {
-    return errorResponse(
-      "invalid_exact_stellar_payload_malformed",
-      "",
-    );
+    return errorResponse("invalid_exact_stellar_payload_malformed", "");
   }
   const network = paymentPayload.accepted.network;
 

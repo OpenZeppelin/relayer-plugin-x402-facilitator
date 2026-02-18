@@ -4,6 +4,7 @@ import { Address, StrKey, scValToNative, xdr } from "@stellar/stellar-sdk";
  * Shared utility functions for Stellar payment processing
  */
 import { Relayer, ScVal } from "@openzeppelin/relayer-sdk";
+import type { VerifyRequest, SettleRequest } from "../types";
 
 // Default estimated ledger time in seconds (Stellar averages ~5-6 seconds per ledger)
 const DEFAULT_ESTIMATED_LEDGER_SECONDS = 5;
@@ -41,9 +42,8 @@ export async function getEstimatedLedgerCloseTimeSeconds(
       return DEFAULT_ESTIMATED_LEDGER_SECONDS;
     }
 
-    const latestSequence = (
-      latestLedgerResponse.result as { sequence: number }
-    ).sequence;
+    const latestSequence = (latestLedgerResponse.result as { sequence: number })
+      .sequence;
     const startLedger = Math.max(1, latestSequence - LEDGER_SAMPLE_SIZE);
 
     const getLedgersResponse = await relayer.rpc({
@@ -71,9 +71,7 @@ export async function getEstimatedLedgerCloseTimeSeconds(
 
     const ledgers = result.ledgers;
     if (!ledgers || ledgers.length < 2) {
-      console.debug(
-        "Insufficient ledger data for estimation, using default",
-      );
+      console.debug("Insufficient ledger data for estimation, using default");
       return DEFAULT_ESTIMATED_LEDGER_SECONDS;
     }
 
@@ -109,8 +107,7 @@ export async function getEstimatedLedgerCloseTimeSeconds(
     );
     return averageCloseTime;
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : String(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
     console.debug(
       `Error estimating ledger close time: ${errorMessage}, using default`,
     );
@@ -756,9 +753,7 @@ export async function validateAuthEntryExpirations(
   // Calculate max allowed expiration using dynamic ledger time estimation
   const estimatedLedgerSeconds =
     await getEstimatedLedgerCloseTimeSeconds(relayer);
-  const maxLedgerOffset = Math.ceil(
-    maxTimeoutSeconds / estimatedLedgerSeconds,
-  );
+  const maxLedgerOffset = Math.ceil(maxTimeoutSeconds / estimatedLedgerSeconds);
   const maxAllowedExpiration = currentLedger + maxLedgerOffset;
 
   // Extract expiration ledgers from auth entries
@@ -799,4 +794,90 @@ export async function validateAuthEntryExpirations(
   }
 
   return { isValid: true, currentLedger };
+}
+
+/**
+ * Validates common structure shared by verify and settle requests.
+ */
+function validateBaseRequestParams(params: unknown): params is {
+  paymentPayload: Record<string, unknown>;
+  paymentRequirements: Record<string, unknown>;
+} {
+  if (
+    typeof params !== "object" ||
+    params === null ||
+    !("paymentPayload" in params) ||
+    !("paymentRequirements" in params)
+  ) {
+    return false;
+  }
+
+  const { paymentPayload, paymentRequirements } = params as Record<
+    string,
+    unknown
+  >;
+
+  if (
+    typeof paymentPayload !== "object" ||
+    paymentPayload === null ||
+    typeof paymentRequirements !== "object" ||
+    paymentRequirements === null
+  ) {
+    return false;
+  }
+
+  const req = paymentRequirements as Record<string, unknown>;
+  const payload = paymentPayload as Record<string, unknown>;
+
+  // Validate paymentRequirements required fields
+  if (
+    typeof req.scheme !== "string" ||
+    typeof req.network !== "string" ||
+    typeof req.amount !== "string" ||
+    typeof req.payTo !== "string" ||
+    typeof req.asset !== "string" ||
+    typeof req.maxTimeoutSeconds !== "number"
+  ) {
+    return false;
+  }
+
+  // Validate paymentPayload required fields
+  if (
+    typeof payload.x402Version !== "number" ||
+    typeof payload.accepted !== "object" ||
+    payload.accepted === null ||
+    typeof payload.payload !== "object" ||
+    payload.payload === null
+  ) {
+    return false;
+  }
+
+  // Validate accepted has scheme and network
+  const accepted = payload.accepted as Record<string, unknown>;
+  if (
+    typeof accepted.scheme !== "string" ||
+    typeof accepted.network !== "string"
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Validates verify request params.
+ */
+export function validateVerifyRequest(
+  params: unknown,
+): params is VerifyRequest {
+  return validateBaseRequestParams(params);
+}
+
+/**
+ * Validates settle request params.
+ */
+export function validateSettleRequest(
+  params: unknown,
+): params is SettleRequest {
+  return validateBaseRequestParams(params);
 }

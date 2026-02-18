@@ -330,7 +330,8 @@ export async function verify(
     }
 
     // 8. Validate auth entry expiration ledgers are within allowed window
-    const maxTimeoutSeconds = paymentRequirements.maxTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
+    const maxTimeoutSeconds =
+      paymentRequirements.maxTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
     const expirationResult = await validateAuthEntryExpirations(
       authEntries,
       relayer,
