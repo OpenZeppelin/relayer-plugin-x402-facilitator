@@ -301,6 +301,30 @@ describe("stellar utils", () => {
       delete (params.paymentPayload.accepted as any).network;
       expect(validateVerifyRequest(params)).toBe(false);
     });
+
+    test("rejects missing accepted.amount", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentPayload.accepted as any).amount;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects missing accepted.maxTimeoutSeconds", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentPayload.accepted as any).maxTimeoutSeconds;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects missing accepted.extra", () => {
+      const params = createValidRequestParams();
+      delete (params.paymentPayload.accepted as any).extra;
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
+
+    test("rejects accepted.extra without areFeesSponsored", () => {
+      const params = createValidRequestParams();
+      (params.paymentPayload.accepted as any).extra = {};
+      expect(validateVerifyRequest(params)).toBe(false);
+    });
   });
 
   describe("validateSettleRequest", () => {

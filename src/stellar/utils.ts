@@ -829,15 +829,7 @@ function validateBaseRequestParams(params: unknown): params is {
   const req = paymentRequirements as Record<string, unknown>;
   const payload = paymentPayload as Record<string, unknown>;
 
-  // Validate paymentRequirements required fields
-  if (
-    typeof req.scheme !== "string" ||
-    typeof req.network !== "string" ||
-    typeof req.amount !== "string" ||
-    typeof req.payTo !== "string" ||
-    typeof req.asset !== "string" ||
-    typeof req.maxTimeoutSeconds !== "number"
-  ) {
+  if (!isValidPaymentRequirementsObject(req)) {
     return false;
   }
 
@@ -852,16 +844,35 @@ function validateBaseRequestParams(params: unknown): params is {
     return false;
   }
 
-  // Validate accepted has scheme and network
+  // Validate accepted has full PaymentRequirements shape
   const accepted = payload.accepted as Record<string, unknown>;
-  if (
-    typeof accepted.scheme !== "string" ||
-    typeof accepted.network !== "string"
-  ) {
+  if (!isValidPaymentRequirementsObject(accepted)) {
     return false;
   }
 
   return true;
+}
+
+function isValidPaymentRequirementsObject(
+  value: Record<string, unknown>,
+): boolean {
+  if (
+    typeof value.scheme !== "string" ||
+    typeof value.network !== "string" ||
+    typeof value.amount !== "string" ||
+    typeof value.payTo !== "string" ||
+    typeof value.asset !== "string" ||
+    typeof value.maxTimeoutSeconds !== "number"
+  ) {
+    return false;
+  }
+
+  if (typeof value.extra !== "object" || value.extra === null) {
+    return false;
+  }
+
+  const extra = value.extra as Record<string, unknown>;
+  return typeof extra.areFeesSponsored === "boolean";
 }
 
 /**
