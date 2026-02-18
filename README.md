@@ -111,7 +111,7 @@ The `/supported` endpoint returns data in the following v2 format:
       "scheme": "exact",
       "network": "stellar:testnet",
       "extra": {
-        "maxLedgerOffset": 12
+        "areFeesSponsored": true
       }
     }
   ],
