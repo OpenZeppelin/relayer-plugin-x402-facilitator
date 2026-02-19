@@ -2,7 +2,7 @@ const path = require("path");
 const { exec, getExecOutput } = require("@actions/exec");
 
 const { version } = require("../package.json");
-const tag = `${version}`;
+const tag = `v${version}`;
 
 process.chdir(path.join(__dirname, ".."));
 
