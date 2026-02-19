@@ -39,6 +39,9 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v4.5.4
+        with:
+          token: ${{ steps.gh-app-token.outputs.token }}
+          persist-credentials: false
 
       - name: Prepare pre-requisites
         uses: ./.github/actions/prepare
