@@ -86,15 +86,15 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           pnpm run install-deps
 
-      - name: Publish to NPM
-        id: changesets
-        uses: changesets/action@e0145edc7d9d8679003495b11f87bd8ef63c0cba # v1.5.3
-        with:
-          setupGitUser: false
-          version: pnpm ci:version
-          title: "ci: Update the version packages"
-          publish: pnpm release
-        env:
-          GITHUB_TOKEN: ${{ steps.gh-app-token.outputs.token }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: true
+      # - name: Publish to NPM
+      #   id: changesets
+      #   uses: changesets/action@e0145edc7d9d8679003495b11f87bd8ef63c0cba # v1.5.3
+      #   with:
+      #     setupGitUser: false
+      #     version: pnpm ci:version
+      #     title: "ci: Update the version packages"
+      #     publish: pnpm release
+      #   env:
+      #     GITHUB_TOKEN: ${{ steps.gh-app-token.outputs.token }}
+      #     NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+      #     NPM_CONFIG_PROVENANCE: true
