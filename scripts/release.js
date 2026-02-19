@@ -26,5 +26,7 @@ process.chdir(path.join(__dirname, ".."));
 
   await exec("changeset", ["publish"]);
 
-  await exec("changeset", ["tag"]);
+  // Create and push the tag explicitly (Changesets defaults to v-prefixed tags).
+  await exec("git", ["tag", tag]);
+  await exec("git", ["push", "origin", tag]);
 })();
