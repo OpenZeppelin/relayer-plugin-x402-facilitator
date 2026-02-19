@@ -29,6 +29,7 @@ jobs:
         with:
           token: ${{ steps.gh-app-token.outputs.token }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Prepare pre-requisites
         uses: ./.github/actions/prepare
