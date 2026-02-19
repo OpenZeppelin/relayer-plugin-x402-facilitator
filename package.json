@@ -16,7 +16,7 @@
   ],
   "scripts": {
     "dev": "tsc --watch",
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.build.esm.json",
     "prebuild": "pnpm clean",
     "prepare": "pnpm run build",
     "typecheck": "tsc --noEmit",
@@ -48,6 +48,7 @@
   "devDependencies": {
     "@changesets/cli": "^2.29.8",
     "@types/node": "^22.19.1",
+    "@types/urijs": "^1.19.26",
     "@typescript-eslint/eslint-plugin": "^8.48.1",
     "@typescript-eslint/parser": "^8.48.1",
     "eslint": "^9.39.1",
