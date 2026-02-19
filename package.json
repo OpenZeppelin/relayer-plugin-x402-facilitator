@@ -18,7 +18,7 @@
     "dev": "tsc --watch",
     "build": "tsc",
     "prebuild": "pnpm clean",
-    "prepare": "npm run build",
+    "prepublish": "pnpm build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
