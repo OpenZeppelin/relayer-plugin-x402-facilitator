@@ -22,10 +22,6 @@ jobs:
       # required to fetch internal or private CodeQL packs
       actions: read
 
-      # only required for workflows in private repositories
-      # actions: read
-      # contents: read
-
     strategy:
       fail-fast: false
       matrix:
