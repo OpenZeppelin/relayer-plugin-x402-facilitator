@@ -212,7 +212,7 @@ app.listen(4021, () => {
 
 ## Using with Stellar Channels Service
 
-For high-throughput x402 payment settlement, you can connect the plugin with the OpenZeppelin Stellar Channels Service. The Channels service provides managed infrastructure for parallel transaction submission on Stellar, handling fee management and sequence number coordination automatically.
+For high-throughput x402 payment settlement, you can connect the plugin with the [OpenZeppelin Stellar Channels Service](https://docs.openzeppelin.com/relayer/guides/stellar-channels-guide). The Channels service provides managed infrastructure for parallel transaction submission on Stellar, handling fee management and sequence number coordination automatically.
 
 **Benefits:**
 
@@ -234,7 +234,7 @@ Add `channel_service_api_url` and `channel_service_api_key` to your network conf
         "assets": [
           "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
         ],
-        "channel_service_api_url": "https://channels-stg.openzeppelin.com",
+        "channel_service_api_url": "https://channels.openzeppelin.com/testnet",
         "channel_service_api_key": "YOUR_CHANNELS_API_KEY"
       }
     ]
@@ -244,7 +244,7 @@ Add `channel_service_api_url` and `channel_service_api_key` to your network conf
 
 **Key fields:**
 
-- **`channel_service_api_url`**: The URL of the Channels service. Use `https://channels-stg.openzeppelin.com` for testnet or the appropriate endpoint for your environment.
+- **`channel_service_api_url`**: The URL of the Channels service. Use `https://channels.openzeppelin.com/testnet` for testnet or the appropriate endpoint for your environment.
 - **`channel_service_api_key`**: Your API key for the Channels service.
 
 When these fields are present, the plugin routes settlement through the Channels service instead of submitting transactions directly via the relayer. The plugin sends the Soroban function XDR and authorization entries to the Channels service, which handles transaction building, simulation, and submission using its pool of channel accounts.
@@ -253,7 +253,7 @@ When these fields are present, the plugin routes settlement through the Channels
 
 > **Note:** This is only needed if the relayer address needs to hold tokens like USDC. If the relayer is only used for transaction submission and does not receive or hold the asset, no trustline is required.
 
-Before a Stellar account can hold or receive tokens like USDC, it must establish a **trustline** to the token's contract. You can create a trustline using [Stellar Laboratory](https://laboratory.stellar.org/) to build a `Change Trust` transaction, then submit the XDR via the relayer:
+Before a Stellar account can hold or receive tokens like USDC, it must establish a **trustline** to the token's contract. You can create a trustline using [Stellar Laboratory](https://lab.stellar.org) to build a `Change Trust` transaction, then submit the XDR via the relayer:
 
 ```
 POST /api/v1/relayers/{relayer-id}/transactions
