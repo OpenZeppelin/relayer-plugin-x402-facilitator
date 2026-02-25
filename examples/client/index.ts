@@ -1,8 +1,8 @@
 import { config } from "dotenv";
-import { wrapFetchWithPayment } from "@x402/fetch";
+import { wrapFetchWithPayment, decodePaymentResponseHeader } from "@x402/fetch";
 import { x402Client } from "@x402/core/client";
-import { ExactStellarScheme } from "./stellar/exact/client/scheme";
-import { createEd25519Signer } from "./stellar/signer";
+import { ExactStellarScheme } from "@x402/stellar/exact/client";
+import { createEd25519Signer } from "@x402/stellar";
 
 config();
 
@@ -49,8 +49,7 @@ async function main() {
         const start = performance.now();
         const response = await payFetch(url);
         const elapsed = performance.now() - start;
-        const data = await response.json();
-        return { status: response.status, data, elapsed };
+        return { status: response.status, response, elapsed };
       })(),
     };
   });
@@ -69,11 +68,16 @@ async function main() {
 
     if (result.status === "fulfilled") {
       fulfilled++;
-      const { status, data, elapsed } = result.value;
-      console.log(
-        `[${label}] ${status} (${elapsed.toFixed(0)}ms)`,
-        JSON.stringify(data),
-      );
+      const { status, response, elapsed } = result.value;
+      const paymentHeader = response.headers.get("PAYMENT-RESPONSE");
+      if (paymentHeader) {
+        const settleResponse = decodePaymentResponseHeader(paymentHeader);
+        console.log(
+          `[${label}] ${status} (${elapsed.toFixed(0)}ms) tx_hash: ${settleResponse.transaction}`,
+        );
+      } else {
+        console.log(`[${label}] ${status} (${elapsed.toFixed(0)}ms)`);
+      }
     } else {
       rejected++;
       console.error(`[${label}] FAILED:`, result.reason);

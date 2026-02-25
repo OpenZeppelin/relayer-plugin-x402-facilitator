@@ -10,6 +10,7 @@
     "@stellar/stellar-sdk": "^14.0.0",
     "@x402/core": "^2.4.0",
     "@x402/fetch": "^2.4.0",
+    "@x402/stellar": "file:../../../x402/typescript/packages/mechanisms/stellar/x402-stellar-2.3.0.tgz",
     "dotenv": "^16.5.0"
   },
   "devDependencies": {

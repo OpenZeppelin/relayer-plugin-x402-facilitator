@@ -17,6 +17,9 @@ importers:
       '@x402/fetch':
         specifier: ^2.4.0
         version: 2.4.0(typescript@5.9.3)
+      '@x402/stellar':
+        specifier: file:../../../x402/typescript/packages/mechanisms/stellar/x402-stellar-2.3.0.tgz
+        version: file:../../../x402/typescript/packages/mechanisms/stellar/x402-stellar-2.3.0.tgz
       dotenv:
         specifier: ^16.5.0
         version: 16.6.1
@@ -232,11 +235,18 @@ packages:
   '@types/node@22.19.11':
     resolution: {integrity: sha512-BH7YwL6rA93ReqeQS1c4bsPpcfOmJasG+Fkr6Y59q83f9M1WcBRHR2vM+P9eOisYRcN3ujQoiZY8uk5W+1WL8w==}
 
+  '@x402/core@2.3.0':
+    resolution: {integrity: sha512-XOSfqZXJMHwBoTFa07MiVr35CaMPoD2hVwncMAQQKr/qfEHmdD4mP3vrcAQvkfIJXVdu/wkpWXTJ5irXy1jn7g==}
+
   '@x402/core@2.4.0':
     resolution: {integrity: sha512-g4K5dAVjevQftxCcpFlUDjO2AHE43FkO43VxwLCQ8ET3ki4aj2fzCcgvnXEj2eloJoocFS/Evt4pSTnP/4cFJw==}
 
   '@x402/fetch@2.4.0':
     resolution: {integrity: sha512-OOMaPAT85qcKnKWRvB4zZlC/CUod0YogCpbLmi555Puxeh7u69mA30MWkNsyzMfhKS1y+GHiG9eZZbpYFmLMTg==}
+
+  '@x402/stellar@file:../../../x402/typescript/packages/mechanisms/stellar/x402-stellar-2.3.0.tgz':
+    resolution: {integrity: sha512-MhJWM0Uqgd3C5ULsm6l/3EmGkPKoyEB8nvxYVA+Z1JEb1l+Uk/19a3H7tehvpt/NuZPWiu7G59kUhpA/MyKIIQ==, tarball: file:../../../x402/typescript/packages/mechanisms/stellar/x402-stellar-2.3.0.tgz}
+    version: 2.3.0
 
   abitype@1.2.3:
     resolution: {integrity: sha512-Ofer5QUnuUdTFsBRwARMoWKOH1ND5ehwYhJ3OJ/BQO+StkwQjHw0XyVh4vDttzHB7QOFhPHa/o413PJ82gU/Tg==}
@@ -655,6 +665,10 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
+  '@x402/core@2.3.0':
+    dependencies:
+      zod: 3.25.76
+
   '@x402/core@2.4.0':
     dependencies:
       zod: 3.25.76
@@ -668,6 +682,13 @@ snapshots:
       - bufferutil
       - typescript
       - utf-8-validate
+
+  '@x402/stellar@file:../../../x402/typescript/packages/mechanisms/stellar/x402-stellar-2.3.0.tgz':
+    dependencies:
+      '@stellar/stellar-sdk': 14.5.0
+      '@x402/core': 2.3.0
+    transitivePeerDependencies:
+      - debug
 
   abitype@1.2.3(typescript@5.9.3)(zod@3.25.76):
     optionalDependencies:
