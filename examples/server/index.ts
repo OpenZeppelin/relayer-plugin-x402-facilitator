@@ -1,7 +1,7 @@
 import { config } from "dotenv";
 import express from "express";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
-import { ExactStellarScheme } from "./stellar/exact/server/scheme";
+import { ExactStellarScheme } from "@x402/stellar/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 
 config();
