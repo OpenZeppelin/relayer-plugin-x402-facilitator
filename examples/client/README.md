@@ -10,6 +10,62 @@ Concurrent x402 payment client that fires multiple paid requests in parallel aga
 - A funded Stellar testnet account (secret key)
   - Create and fund one at the [Stellar Laboratory](https://lab.stellar.org/)
 
+## Note on `@x402/stellar`
+
+The `@x402/stellar` package in `package.json` is currently referenced as a local `.tgz` file. This is a temporary workaround while waiting for the official release to npm. Once published, replace it with the npm version (e.g., `"@x402/stellar": "^2.3.0"`).
+
+To build that `.tgz` in the meantime, you need the Stellar support changes from PR [coinbase/x402#711](https://github.com/coinbase/x402/pull/711), which is based on a fork branch (`marcelosalloum/x402:stellar-support`), not a branch in the main `coinbase/x402` repo.
+
+Example checkout options:
+
+```bash
+# Option 1: GitHub CLI (recommended)
+gh repo clone coinbase/x402
+cd x402
+gh pr checkout 711
+
+# Option 2: Manual git checkout from the fork branch (TEMPORARY SOLUTION)
+git clone https://github.com/coinbase/x402.git
+cd x402
+git remote add marcelosalloum https://github.com/marcelosalloum/x402.git
+git fetch marcelosalloum stellar-support
+git checkout -b stellar-support marcelosalloum/stellar-support
+```
+
+Then follow the x402 repo instructions to build/pack `@x402/stellar` and update the local `.tgz` path as needed.
+
+### Generate the `@x402/stellar` `.tgz`
+
+After checking out the PR branch in your local `x402` clone, build and pack the Stellar package so the local file dependency exists:
+
+```bash
+# Install dependencies (repo root)
+pnpm install
+
+# Go to the Stellar mechanism package
+cd typescript/packages/mechanisms/stellar
+
+# Build/package the library (if required by the package scripts)
+pnpm build
+
+# Generate the .tgz file used by this example
+pnpm pack
+```
+
+This should produce a tarball like:
+
+```bash
+x402-stellar-2.3.0.tgz
+```
+
+By default, this example expects it at:
+
+```bash
+../../../x402/typescript/packages/mechanisms/stellar/x402-stellar-2.3.0.tgz
+```
+
+If the generated filename/version differs, update the `@x402/stellar` entry in `package.json` to match the actual `.tgz` file path.
+
 ## Setup
 
 ```bash
