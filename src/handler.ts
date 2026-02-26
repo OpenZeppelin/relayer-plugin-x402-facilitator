@@ -160,17 +160,20 @@ async function handleSupported(
   // Fetch relayer info for each network in parallel
   const networkPromises = config.networks.map(
     async (networkConfig: NetworkConfig) => {
-      let relayerAddress: string | undefined;
+      let relayerAddress: string | undefined =
+        networkConfig.channel_service_fund_relayer_address;
 
-      try {
-        const relayer = api.useRelayer(networkConfig.relayer_id);
-        const relayerInfo = await relayer.getRelayer();
-        relayerAddress = relayerInfo.address;
-      } catch (error) {
-        console.error(
-          `Failed to get relayer info for ${networkConfig.network}:`,
-          error,
-        );
+      if (!relayerAddress) {
+        try {
+          const relayer = api.useRelayer(networkConfig.relayer_id);
+          const relayerInfo = await relayer.getRelayer();
+          relayerAddress = relayerInfo.address;
+        } catch (error) {
+          console.error(
+            `Failed to get relayer info for ${networkConfig.network}:`,
+            error,
+          );
+        }
       }
 
       const extra = { areFeesSponsored: true };

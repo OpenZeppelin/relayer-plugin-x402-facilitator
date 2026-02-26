@@ -135,6 +135,7 @@ export type NetworkConfig = {
   assets: string[];
   channel_service_api_url?: string;
   channel_service_api_key?: string;
+  channel_service_fund_relayer_address?: string;
   maxTransactionFeeStroops?: string;
 };
 
