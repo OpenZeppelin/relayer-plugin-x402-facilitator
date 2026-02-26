@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { Address, Keypair } from "@stellar/stellar-sdk";
 import {
   getEstimatedLedgerCloseTimeSeconds,
   getNetworkPassphrase,
@@ -6,6 +7,7 @@ import {
   mapRelayerNetworkToStellar,
   validateVerifyRequest,
   validateSettleRequest,
+  validateAuthEntries,
 } from "../src/stellar/utils";
 
 describe("stellar utils", () => {
@@ -324,6 +326,68 @@ describe("stellar utils", () => {
       const params = createValidRequestParams();
       (params.paymentPayload.accepted as any).extra = {};
       expect(validateVerifyRequest(params)).toBe(false);
+    });
+  });
+
+  describe("validateAuthEntries", () => {
+    function mockAuthEntry(stellarAddress: string) {
+      const addr = new Address(stellarAddress);
+      return {
+        credentials: () => ({
+          switch: () => ({ name: "sorobanCredentialsAddress" }),
+          address: () => ({
+            address: () => addr.toScAddress(),
+          }),
+        }),
+        rootInvocation: () => ({
+          subInvocations: () => [],
+        }),
+      } as any;
+    }
+
+    // Generate valid Stellar public keys for tests using deterministic seeds
+    const RELAYER_ADDR = Keypair.fromRawEd25519Seed(
+      Buffer.alloc(32, 1),
+    ).publicKey();
+    const CHANNEL_FUND_ADDR = Keypair.fromRawEd25519Seed(
+      Buffer.alloc(32, 2),
+    ).publicKey();
+    const PAYER_ADDR = Keypair.fromRawEd25519Seed(
+      Buffer.alloc(32, 3),
+    ).publicKey();
+
+    test("returns null for valid auth entries with no facilitator match", () => {
+      const entries = [mockAuthEntry(PAYER_ADDR)];
+      const result = validateAuthEntries(entries, RELAYER_ADDR);
+      expect(result).toBeNull();
+    });
+
+    test("rejects when primary facilitator address is in auth entries", () => {
+      const entries = [mockAuthEntry(RELAYER_ADDR)];
+      const result = validateAuthEntries(entries, RELAYER_ADDR);
+      expect(result).toBe("invalid_exact_stellar_payload_facilitator_in_auth");
+    });
+
+    test("rejects when additional facilitator address is in auth entries", () => {
+      const entries = [mockAuthEntry(CHANNEL_FUND_ADDR)];
+      const result = validateAuthEntries(entries, RELAYER_ADDR, [
+        CHANNEL_FUND_ADDR,
+      ]);
+      expect(result).toBe("invalid_exact_stellar_payload_facilitator_in_auth");
+    });
+
+    test("allows when additional facilitator addresses are not in auth entries", () => {
+      const entries = [mockAuthEntry(PAYER_ADDR)];
+      const result = validateAuthEntries(entries, RELAYER_ADDR, [
+        CHANNEL_FUND_ADDR,
+      ]);
+      expect(result).toBeNull();
+    });
+
+    test("filters undefined values from additional facilitator addresses", () => {
+      const entries = [mockAuthEntry(PAYER_ADDR)];
+      const result = validateAuthEntries(entries, RELAYER_ADDR, [undefined]);
+      expect(result).toBeNull();
     });
   });
 
