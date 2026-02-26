@@ -298,6 +298,95 @@ describe("handler routing", () => {
     });
   });
 
+  test("/supported returns channel_service_fund_relayer_address when configured", async () => {
+    const api = createApiWithLedger(100, "G-RELAYER123");
+    const configWithChannelSigner = {
+      networks: [
+        {
+          network: "stellar:testnet",
+          type: "stellar",
+          relayer_id: "relayer-1",
+          assets: ["ASSET_CONTRACT"],
+          channel_service_fund_relayer_address: "G-CHANNEL-SIGNER",
+        },
+      ],
+    };
+
+    const result = await handler({
+      route: "/supported",
+      params: {},
+      api,
+      config: configWithChannelSigner,
+      kv: {} as any,
+      headers: {},
+      method: "POST",
+      query: {},
+    } as any);
+
+    expect((result as any).signers["stellar:testnet"]).toContain(
+      "G-CHANNEL-SIGNER",
+    );
+    expect((result as any).signers["stellar:testnet"]).not.toContain(
+      "G-RELAYER123",
+    );
+  });
+
+  test("/supported falls back to relayer address when channel_service_fund_relayer_address is not configured", async () => {
+    const api = createApiWithLedger(100, "G-RELAYER123");
+    const result = await handler({
+      route: "/supported",
+      params: {},
+      api,
+      config: networkConfig,
+      kv: {} as any,
+      headers: {},
+      method: "POST",
+      query: {},
+    } as any);
+
+    expect((result as any).signers["stellar:testnet"]).toContain(
+      "G-RELAYER123",
+    );
+  });
+
+  test("/supported returns configured fund relayer address even when getRelayer fails", async () => {
+    const api = {
+      useRelayer: () =>
+        ({
+          getRelayer: async () => {
+            throw new Error("Failed to get relayer info");
+          },
+        }) as any,
+    } as any;
+
+    const configWithChannelSigner = {
+      networks: [
+        {
+          network: "stellar:testnet",
+          type: "stellar",
+          relayer_id: "relayer-1",
+          assets: ["ASSET_CONTRACT"],
+          channel_service_fund_relayer_address: "G-CHANNEL-SIGNER",
+        },
+      ],
+    };
+
+    const result = await handler({
+      route: "/supported",
+      params: {},
+      api,
+      config: configWithChannelSigner,
+      kv: {} as any,
+      headers: {},
+      method: "POST",
+      query: {},
+    } as any);
+
+    expect((result as any).signers["stellar:testnet"]).toContain(
+      "G-CHANNEL-SIGNER",
+    );
+  });
+
   test("/supported handles relayer info errors gracefully", async () => {
     const api = {
       useRelayer: () =>

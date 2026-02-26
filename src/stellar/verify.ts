@@ -227,7 +227,14 @@ export async function verify(
 
     // Security check: facilitator MUST NOT be the from address in the transfer
     // This prevents the facilitator from being tricked into transferring their own funds
-    if (relayerInfo.address && fromAddress === relayerInfo.address) {
+    // Check both the RPC relayer address and the channel service signer address
+    const channelServiceFundRelayerAddress =
+      networkConfig.channel_service_fund_relayer_address;
+    if (
+      (relayerInfo.address && fromAddress === relayerInfo.address) ||
+      (channelServiceFundRelayerAddress &&
+        fromAddress === channelServiceFundRelayerAddress)
+    ) {
       console.error(
         `Security violation: from address is the facilitator: ${fromAddress}`,
       );
@@ -290,6 +297,7 @@ export async function verify(
     const authEntriesError = validateAuthEntries(
       authEntries,
       relayerInfo.address,
+      [channelServiceFundRelayerAddress],
     );
     if (authEntriesError) {
       return invalidResponse(authEntriesError, fromAddress);
@@ -341,11 +349,14 @@ export async function verify(
       return invalidResponse(expirationResult.error!, fromAddress);
     }
 
-    // 9. Security check: ensure transaction source is not the relayer
+    // 9. Security check: ensure transaction source is not the relayer or channel service signer
     // This prevents the client from trying to authorize actions on behalf of the relayer
     if (
       operation.source === relayerInfo.address ||
-      transaction.source === relayerInfo.address
+      transaction.source === relayerInfo.address ||
+      (channelServiceFundRelayerAddress &&
+        (operation.source === channelServiceFundRelayerAddress ||
+          transaction.source === channelServiceFundRelayerAddress))
     ) {
       return invalidResponse(
         "invalid_exact_stellar_payload_unsafe_tx_or_op_source",

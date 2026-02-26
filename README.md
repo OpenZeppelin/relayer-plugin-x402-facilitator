@@ -85,6 +85,7 @@ Each object in `config.networks`:
 - `relayer_id`: ID of the Relayer account to use for this network
 - `assets`: list of allowed assets (issuer addresses for Stellar)
 - `channel_service_api_url` / `channel_service_api_key` (optional): enable channel service acceleration for Stellar
+- `channel_service_fund_relayer_address` (optional): on-chain signer address of the channel service fund relayer, used in `/supported` response and security checks
 
 ### Exposed routes
 
@@ -231,11 +232,10 @@ Add `channel_service_api_url` and `channel_service_api_key` to your network conf
         "network": "stellar:testnet",
         "type": "stellar",
         "relayer_id": "stellar-example",
-        "assets": [
-          "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"
-        ],
+        "assets": ["CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"],
         "channel_service_api_url": "https://channels.openzeppelin.com/testnet",
-        "channel_service_api_key": "YOUR_CHANNELS_API_KEY"
+        "channel_service_api_key": "YOUR_CHANNELS_API_KEY",
+        "channel_service_fund_relayer_address": "G..."
       }
     ]
   }
@@ -246,6 +246,7 @@ Add `channel_service_api_url` and `channel_service_api_key` to your network conf
 
 - **`channel_service_api_url`**: The URL of the Channels service. Use `https://channels.openzeppelin.com/testnet` for testnet or the appropriate endpoint for your environment.
 - **`channel_service_api_key`**: Your API key for the Channels service.
+- **`channel_service_fund_relayer_address`** (optional): The on-chain signer address of the Channels service fund relayer. When set, the `/supported` endpoint reports this address instead of the RPC relayer address, and verify security checks also protect this address from being used as a transfer source.
 
 When these fields are present, the plugin routes settlement through the Channels service instead of submitting transactions directly via the relayer. The plugin sends the Soroban function XDR and authorization entries to the Channels service, which handles transaction building, simulation, and submission using its pool of channel accounts.
 

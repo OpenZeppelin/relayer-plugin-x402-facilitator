@@ -323,16 +323,24 @@ export function getAllAddressesFromAuthEntries(
 export function validateAuthEntries(
   authEntries: xdr.SorobanAuthorizationEntry[],
   facilitatorAddress: string | undefined,
+  additionalFacilitatorAddresses?: (string | undefined)[],
 ): string | null {
-  // Check facilitator address is not in any auth entry
-  if (facilitatorAddress) {
+  // Check facilitator addresses are not in any auth entry
+  const addressesToCheck = [
+    facilitatorAddress,
+    ...(additionalFacilitatorAddresses ?? []),
+  ].filter((addr): addr is string => !!addr);
+
+  if (addressesToCheck.length > 0) {
     const allAuthAddresses = getAllAddressesFromAuthEntries(authEntries);
 
-    if (allAuthAddresses.includes(facilitatorAddress)) {
-      console.error(
-        `Security violation: facilitator address ${facilitatorAddress} found in auth entries`,
-      );
-      return "invalid_exact_stellar_payload_facilitator_in_auth";
+    for (const addr of addressesToCheck) {
+      if (allAuthAddresses.includes(addr)) {
+        console.error(
+          `Security violation: facilitator address ${addr} found in auth entries`,
+        );
+        return "invalid_exact_stellar_payload_facilitator_in_auth";
+      }
     }
   }
 

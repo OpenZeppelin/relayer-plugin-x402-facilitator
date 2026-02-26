@@ -991,6 +991,130 @@ describe("stellar verify", () => {
     expect(result.payer).toBe("G-PAYER");
   });
 
+  test("rejects when from address is channel service fund relayer address", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-CHANNEL-FUND-RELAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    const api = makeApi();
+    const configWithFundRelayer = {
+      ...networkConfig,
+      channel_service_fund_relayer_address: "G-CHANNEL-FUND-RELAYER",
+    };
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      configWithFundRelayer,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_unsafe_from_address",
+    );
+    expect(result.payer).toBe("G-CHANNEL-FUND-RELAYER");
+  });
+
+  test("rejects when transaction source is channel service fund relayer address", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+      source: "G-CHANNEL-FUND-RELAYER",
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+
+    const configWithFundRelayer = {
+      ...networkConfig,
+      channel_service_fund_relayer_address: "G-CHANNEL-FUND-RELAYER",
+    };
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      configWithFundRelayer,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_unsafe_tx_or_op_source",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("rejects when operation source is channel service fund relayer address", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+      opSource: "G-CHANNEL-FUND-RELAYER",
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+
+    const configWithFundRelayer = {
+      ...networkConfig,
+      channel_service_fund_relayer_address: "G-CHANNEL-FUND-RELAYER",
+    };
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      configWithFundRelayer,
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_unsafe_tx_or_op_source",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
   test("skips max fee check when maxTransactionFeeStroops not configured", async () => {
     const tx = buildInvokeTxBase64({
       payer: "G-PAYER",
