@@ -1,0 +1,24 @@
+{
+  "name": "x402-client-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Concurrent x402 payment client for Stellar testnet",
+  "scripts": {
+    "start": "npx tsx index.ts"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^14.0.0",
+    "@x402/core": "^2.4.0",
+    "@x402/fetch": "^2.4.0",
+    "@x402/stellar": "file:../../../x402/typescript/packages/mechanisms/stellar/x402-stellar-2.3.0.tgz",
+    "dotenv": "^16.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.1",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  }
+}
