@@ -6,114 +6,14 @@ import { Address, StrKey, scValToNative, xdr } from "@stellar/stellar-sdk";
 import { Relayer, ScVal } from "@openzeppelin/relayer-sdk";
 import type { VerifyRequest, SettleRequest } from "../types";
 
-// Default estimated ledger time in seconds (Stellar averages ~5-6 seconds per ledger)
-const DEFAULT_ESTIMATED_LEDGER_SECONDS = 5;
+// Estimated ledger close time in seconds.
+// Stellar averages ~5-6 seconds per ledger and this value is very stable.
+// Used only for converting time-based timeouts to ledger offsets in expiration
+// validation — a rough estimate is sufficient for this safety check.
+export const ESTIMATED_LEDGER_CLOSE_SECONDS = 5;
 
 // Default timeout in seconds for payment operations
 export const DEFAULT_TIMEOUT_SECONDS = 60;
-const LEDGER_SAMPLE_SIZE = 10;
-
-/**
- * Estimates the average ledger close time by sampling recent ledgers.
- *
- * Calls the Soroban RPC `getLedgers` method to fetch recent ledgers,
- * then calculates the average time between consecutive ledger closings.
- * Falls back to DEFAULT_ESTIMATED_LEDGER_SECONDS (5s) if the RPC call
- * fails, returns insufficient data, or the calculated average is invalid.
- *
- * @param relayer - Relayer instance for RPC calls
- * @returns Estimated ledger close time in seconds
- */
-export async function getEstimatedLedgerCloseTimeSeconds(
-  relayer: Relayer,
-): Promise<number> {
-  try {
-    const latestLedgerResponse = await relayer.rpc({
-      method: "getLatestLedger",
-      id: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
-      jsonrpc: "2.0",
-      params: {},
-    });
-
-    if (latestLedgerResponse.error || !latestLedgerResponse.result) {
-      console.debug(
-        "Failed to get latest ledger for estimation, using default",
-      );
-      return DEFAULT_ESTIMATED_LEDGER_SECONDS;
-    }
-
-    const latestSequence = (latestLedgerResponse.result as { sequence: number })
-      .sequence;
-    const startLedger = Math.max(1, latestSequence - LEDGER_SAMPLE_SIZE);
-
-    const getLedgersResponse = await relayer.rpc({
-      method: "getLedgers",
-      id: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
-      jsonrpc: "2.0",
-      params: {
-        startLedger,
-        pagination: {
-          limit: LEDGER_SAMPLE_SIZE,
-        },
-      },
-    });
-
-    if (getLedgersResponse.error || !getLedgersResponse.result) {
-      console.debug(
-        "getLedgers RPC failed, using default ledger time estimate",
-      );
-      return DEFAULT_ESTIMATED_LEDGER_SECONDS;
-    }
-
-    const result = getLedgersResponse.result as {
-      ledgers?: Array<{ sequence: number; ledgerCloseTime: string }>;
-    };
-
-    const ledgers = result.ledgers;
-    if (!ledgers || ledgers.length < 2) {
-      console.debug("Insufficient ledger data for estimation, using default");
-      return DEFAULT_ESTIMATED_LEDGER_SECONDS;
-    }
-
-    let totalDelta = 0;
-    let deltaCount = 0;
-
-    for (let i = 1; i < ledgers.length; i++) {
-      const prevTime = parseInt(ledgers[i - 1].ledgerCloseTime, 10);
-      const currTime = parseInt(ledgers[i].ledgerCloseTime, 10);
-
-      if (!isNaN(prevTime) && !isNaN(currTime) && currTime > prevTime) {
-        totalDelta += currTime - prevTime;
-        deltaCount++;
-      }
-    }
-
-    if (deltaCount === 0) {
-      console.debug("No valid ledger time deltas found, using default");
-      return DEFAULT_ESTIMATED_LEDGER_SECONDS;
-    }
-
-    const averageCloseTime = totalDelta / deltaCount;
-
-    if (averageCloseTime <= 0 || !isFinite(averageCloseTime)) {
-      console.debug(
-        `Calculated average ledger time ${averageCloseTime}s is invalid, using default`,
-      );
-      return DEFAULT_ESTIMATED_LEDGER_SECONDS;
-    }
-
-    console.debug(
-      `Estimated ledger close time: ${averageCloseTime.toFixed(2)}s (from ${deltaCount} samples)`,
-    );
-    return averageCloseTime;
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    console.debug(
-      `Error estimating ledger close time: ${errorMessage}, using default`,
-    );
-    return DEFAULT_ESTIMATED_LEDGER_SECONDS;
-  }
-}
 
 /**
  * Gets the network passphrase for a given network
@@ -758,10 +658,12 @@ export async function validateAuthEntryExpirations(
   const currentLedger = (latestLedgerResponse.result as { sequence: number })
     .sequence;
 
-  // Calculate max allowed expiration using dynamic ledger time estimation
-  const estimatedLedgerSeconds =
-    await getEstimatedLedgerCloseTimeSeconds(relayer);
-  const maxLedgerOffset = Math.ceil(maxTimeoutSeconds / estimatedLedgerSeconds);
+  // Calculate max allowed expiration using hardcoded ledger close time.
+  // Stellar ledger time is very stable (~5-6s), so a constant is sufficient
+  // for this safety-margin calculation.
+  const maxLedgerOffset = Math.ceil(
+    maxTimeoutSeconds / ESTIMATED_LEDGER_CLOSE_SECONDS,
+  );
   const maxAllowedExpiration = currentLedger + maxLedgerOffset;
 
   // Extract expiration ledgers from auth entries

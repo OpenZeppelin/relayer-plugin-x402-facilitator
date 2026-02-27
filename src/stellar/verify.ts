@@ -337,19 +337,7 @@ export async function verify(
       );
     }
 
-    // 8. Validate auth entry expiration ledgers are within allowed window
-    const maxTimeoutSeconds =
-      paymentRequirements.maxTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
-    const expirationResult = await validateAuthEntryExpirations(
-      authEntries,
-      relayer,
-      maxTimeoutSeconds,
-    );
-    if (!expirationResult.isValid) {
-      return invalidResponse(expirationResult.error!, fromAddress);
-    }
-
-    // 9. Security check: ensure transaction source is not the relayer or channel service signer
+    // 8. Security check: ensure transaction source is not the relayer or channel service signer
     // This prevents the client from trying to authorize actions on behalf of the relayer
     if (
       operation.source === relayerInfo.address ||
@@ -364,15 +352,26 @@ export async function verify(
       );
     }
 
-    // 10. Re-simulate to ensure transaction will succeed when rebuilt
-    const simulateRpcResponse = await relayer.rpc({
-      method: "simulateTransaction",
-      id: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
-      jsonrpc: "2.0",
-      params: {
-        transaction: stellarPayload.transaction,
-      },
-    });
+    // 9. Validate auth entry expiration + re-simulate in parallel
+    // These are independent RPC calls that can safely run concurrently.
+    const maxTimeoutSeconds =
+      paymentRequirements.maxTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
+
+    const [expirationResult, simulateRpcResponse] = await Promise.all([
+      validateAuthEntryExpirations(authEntries, relayer, maxTimeoutSeconds),
+      relayer.rpc({
+        method: "simulateTransaction",
+        id: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER),
+        jsonrpc: "2.0",
+        params: {
+          transaction: stellarPayload.transaction,
+        },
+      }),
+    ]);
+
+    if (!expirationResult.isValid) {
+      return invalidResponse(expirationResult.error!, fromAddress);
+    }
 
     if (simulateRpcResponse.error) {
       console.error("Simulation RPC error:", simulateRpcResponse.error);
@@ -392,7 +391,7 @@ export async function verify(
       );
     }
 
-    // 11. Validate transaction fee bounds
+    // 10. Validate transaction fee bounds
     const successSimResponse =
       simulateResponse as rpc.Api.SimulateTransactionSuccessResponse;
     const minResourceFee = successSimResponse.minResourceFee;
