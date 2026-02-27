@@ -10,7 +10,7 @@ import type { VerifyRequest, SettleRequest } from "../types";
 // Stellar averages ~5-6 seconds per ledger and this value is very stable.
 // Used only for converting time-based timeouts to ledger offsets in expiration
 // validation — a rough estimate is sufficient for this safety check.
-export const ESTIMATED_LEDGER_CLOSE_SECONDS = 5.5;
+export const ESTIMATED_LEDGER_CLOSE_SECONDS = 5;
 
 // Default timeout in seconds for payment operations
 export const DEFAULT_TIMEOUT_SECONDS = 60;
