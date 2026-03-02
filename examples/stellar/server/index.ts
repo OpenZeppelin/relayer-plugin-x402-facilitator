@@ -26,6 +26,8 @@ if (!relayerApiKey) {
   process.exit(1);
 }
 
+const stellarNetwork = (process.env.STELLAR_NETWORK ||
+  "stellar:pubnet") as `${string}:${string}`;
 const port = Number(process.env.PORT) || 4021;
 
 // --- Facilitator client ---
@@ -51,7 +53,7 @@ app.use(
           {
             scheme: "exact",
             price: "$0.001",
-            network: "stellar:testnet",
+            network: stellarNetwork,
             payTo: stellarAddress,
           },
         ],
@@ -63,7 +65,7 @@ app.use(
           {
             scheme: "exact",
             price: "$0.001",
-            network: "stellar:testnet",
+            network: stellarNetwork,
             payTo: stellarAddress,
           },
         ],
@@ -72,7 +74,7 @@ app.use(
       },
     },
     new x402ResourceServer(facilitatorClient).register(
-      "stellar:testnet",
+      stellarNetwork,
       new ExactStellarScheme(),
     ),
   ),
@@ -103,8 +105,10 @@ app.get("/premium", (_req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`x402 server listening at http://localhost:${port}`);
+  console.log(
+    `x402 server listening at http://localhost:${port} (${stellarNetwork})`,
+  );
   console.log(`  GET /health   - free`);
   console.log(`  GET /weather  - $0.001`);
-  console.log(`  GET /premium  - $0.01`);
+  console.log(`  GET /premium  - $0.001`);
 });
