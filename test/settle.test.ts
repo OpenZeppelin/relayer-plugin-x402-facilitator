@@ -149,16 +149,40 @@ describe("stellar settle", () => {
     expect(result.payer).toBe("G-PAYER");
   });
 
-  test("settles via channel service when configured", async () => {
+  test("settles via channel service when configured (skipWait + poll)", async () => {
     const verifySpy = vi.spyOn(verifyModule, "verify").mockResolvedValue({
       isValid: true,
       payer: "G-PAYER",
     });
 
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      json: async () => ({ success: true, data: { hash: "HASH_CHANNEL" } }),
-    } as any);
+    let callCount = 0;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          // First call: submit with skipWait, returns transactionId
+          return {
+            ok: true,
+            json: async () => ({
+              success: true,
+              data: { transactionId: "TX_ID_1", status: "pending", hash: null },
+            }),
+          } as any;
+        }
+        // Second call: get-transaction poll, returns confirmed
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            data: {
+              transactionId: "TX_ID_1",
+              status: "confirmed",
+              hash: "HASH_CHANNEL",
+            },
+          }),
+        } as any;
+      });
 
     const networkConfig = {
       ...baseNetworkConfig,
@@ -174,7 +198,14 @@ describe("stellar settle", () => {
 
     const result = await settle(params as any, makeApi(), networkConfig);
 
-    expect(fetchMock).toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // First call should include skipWait
+    const firstCallBody = JSON.parse((fetchMock.mock.calls[0][1] as any).body);
+    expect(firstCallBody.params.skipWait).toBe(true);
+    // Second call should be get-transaction
+    const secondCallBody = JSON.parse((fetchMock.mock.calls[1][1] as any).body);
+    expect(secondCallBody.params.getTransaction.transactionId).toBe("TX_ID_1");
+
     expect(verifySpy).toHaveBeenCalled();
     expect(result.success).toBe(true);
     expect(result.transaction).toBe("HASH_CHANNEL");
@@ -199,7 +230,73 @@ describe("stellar settle", () => {
     expect(result.errorReason).toBe("unsupported_asset");
   });
 
-  test("fails when channel service returns error", async () => {
+  test("settles via channel service legacy flow (direct hash, no polling)", async () => {
+    vi.spyOn(verifyModule, "verify").mockResolvedValue({
+      isValid: true,
+      payer: "G-PAYER",
+    });
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        success: true,
+        data: { hash: "HASH_LEGACY" },
+      }),
+    } as any);
+
+    const networkConfig = {
+      ...baseNetworkConfig,
+      channel_service_api_url: "https://channel.service/submit",
+      channel_service_api_key: "channel-key",
+    };
+
+    const tx = buildInvokeTxBase64();
+    const params = {
+      paymentPayload: buildPaymentPayloadV2(tx),
+      paymentRequirements: buildPaymentRequirementsV2(),
+    };
+
+    const result = await settle(params as any, makeApi(), networkConfig);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(true);
+    expect(result.transaction).toBe("HASH_LEGACY");
+  });
+
+  test("fails when channel service submit returns success with empty data", async () => {
+    vi.spyOn(verifyModule, "verify").mockResolvedValue({
+      isValid: true,
+      payer: "G-PAYER",
+    });
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        success: true,
+        data: {},
+      }),
+    } as any);
+
+    const networkConfig = {
+      ...baseNetworkConfig,
+      channel_service_api_url: "https://channel.service/submit",
+      channel_service_api_key: "channel-key",
+    };
+
+    const tx = buildInvokeTxBase64();
+    const params = {
+      paymentPayload: buildPaymentPayloadV2(tx),
+      paymentRequirements: buildPaymentRequirementsV2(),
+    };
+
+    const result = await settle(params as any, makeApi(), networkConfig);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe("settle_channel_service_failed");
+  });
+
+  test("fails when channel service submit returns error", async () => {
     vi.spyOn(verifyModule, "verify").mockResolvedValue({
       isValid: true,
       payer: "G-PAYER",
@@ -227,6 +324,54 @@ describe("stellar settle", () => {
     const result = await settle(params as any, makeApi(), networkConfig);
 
     expect(fetchMock).toHaveBeenCalled();
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe("settle_channel_service_failed");
+  });
+
+  test("fails when channel service transaction poll returns failed status", async () => {
+    vi.spyOn(verifyModule, "verify").mockResolvedValue({
+      isValid: true,
+      payer: "G-PAYER",
+    });
+
+    let callCount = 0;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            ok: true,
+            json: async () => ({
+              success: true,
+              data: { transactionId: "TX_ID_1", status: "pending", hash: null },
+            }),
+          } as any;
+        }
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            data: { transactionId: "TX_ID_1", status: "failed", hash: null },
+          }),
+        } as any;
+      });
+
+    const networkConfig = {
+      ...baseNetworkConfig,
+      channel_service_api_url: "https://channel.service/submit",
+      channel_service_api_key: "channel-key",
+    };
+
+    const tx = buildInvokeTxBase64();
+    const params = {
+      paymentPayload: buildPaymentPayloadV2(tx),
+      paymentRequirements: buildPaymentRequirementsV2(),
+    };
+
+    const result = await settle(params as any, makeApi(), networkConfig);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(result.success).toBe(false);
     expect(result.errorReason).toBe("settle_channel_service_failed");
   });
