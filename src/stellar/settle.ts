@@ -17,7 +17,6 @@ import { Address, Operation, Transaction, xdr } from "@stellar/stellar-sdk";
 import {
   ExactStellarPayloadV2,
   NetworkConfig,
-  PaymentRequirements,
   SettleRequest,
   SettleResponse,
 } from "../types";
@@ -47,20 +46,24 @@ type ErrorReason =
 interface ChannelServiceResponse {
   success: boolean;
   data: {
-    hash?: string;
+    transactionId?: string;
+    status?: string;
+    hash?: string | null;
     error?: string;
   };
 }
+
+const CHANNEL_POLL_INTERVAL_MS = 1000;
+const BUFFER_MS = 2_000;
 
 /**
  * Submits transaction via channel service API.
  * Used when channel_service_api_url and channel_service_api_key are configured.
  */
-async function submitViaChannelService(
+async function callChannelService(
   apiUrl: string,
   apiKey: string,
-  funcXdr: string,
-  authXdrs: string[],
+  params: Record<string, unknown>,
 ): Promise<ChannelServiceResponse> {
   const response = await fetch(apiUrl, {
     method: "POST",
@@ -68,12 +71,7 @@ async function submitViaChannelService(
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({
-      params: {
-        func: funcXdr,
-        auth: authXdrs,
-      },
-    }),
+    body: JSON.stringify({ params }),
   });
 
   if (!response.ok) {
@@ -85,6 +83,49 @@ async function submitViaChannelService(
 }
 
 /**
+ * Polls channel service for transaction status until confirmed, failed, or timeout.
+ */
+async function pollTransactionStatus(
+  apiUrl: string,
+  apiKey: string,
+  transactionId: string,
+  timeoutMs: number,
+): Promise<ChannelServiceResponse> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const result = await callChannelService(apiUrl, apiKey, {
+      getTransaction: { transactionId },
+    });
+
+    const status = result.data?.status;
+    if (
+      status &&
+      status !== "pending" &&
+      status !== "sent" &&
+      status !== "submitted"
+    ) {
+      return result;
+    }
+
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(CHANNEL_POLL_INTERVAL_MS, remaining)),
+    );
+  }
+
+  return {
+    success: false,
+    data: {
+      transactionId,
+      status: "timeout",
+      error: "Transaction polling timed out",
+    },
+  };
+}
+
+/**
  * Settles transaction via channel service.
  * Extracts host function and auth entries as XDR and submits to channel service.
  */
@@ -93,37 +134,84 @@ async function settleViaChannelService(
   authEntriesXdr: string[],
   networkConfig: NetworkConfig,
   network: string,
+  deadlineMs: number,
   payer?: string,
 ): Promise<SettleResponse> {
   const funcXdr = func.toXDR("base64");
+  const apiUrl = networkConfig.channel_service_api_url!;
+  const apiKey = networkConfig.channel_service_api_key!;
 
-  console.log("Settling via channel service:", {
-    apiUrl: networkConfig.channel_service_api_url,
+  console.log("Settling via channel service (skipWait):", {
+    apiUrl,
     funcXdrLength: funcXdr.length,
     authEntriesCount: authEntriesXdr.length,
   });
 
   try {
-    const channelResponse = await submitViaChannelService(
-      networkConfig.channel_service_api_url!,
-      networkConfig.channel_service_api_key!,
-      funcXdr,
-      authEntriesXdr,
-    );
+    // Submit with skipWait to return immediately without waiting for confirmation
+    const submitResponse = await callChannelService(apiUrl, apiKey, {
+      func: funcXdr,
+      auth: authEntriesXdr,
+      skipWait: true,
+    });
 
-    if (channelResponse.success && channelResponse.data?.hash) {
-      console.log(
-        "Transaction confirmed via channel service:",
-        channelResponse.data.hash,
-      );
-      return successResponse(channelResponse.data.hash, network, payer);
-    } else {
-      console.error("Channel service submission failed:", channelResponse);
+    if (!submitResponse.success) {
+      console.error("Channel service submission failed:", submitResponse);
       return errorResponse(
         "settle_channel_service_failed",
         network,
         payer,
-        channelResponse.data?.hash,
+        submitResponse.data?.hash ?? undefined,
+      );
+    }
+
+    // Legacy flow: channel service confirmed directly with a hash (no skipWait support)
+    if (submitResponse.data?.hash) {
+      console.log(
+        "Transaction confirmed via channel service (legacy):",
+        submitResponse.data.hash,
+      );
+      return successResponse(submitResponse.data.hash, network, payer);
+    }
+
+    // Async flow: channel service returned a transactionId for polling
+    if (!submitResponse.data?.transactionId) {
+      console.error("Channel service returned no hash or transactionId:", submitResponse);
+      return errorResponse("settle_channel_service_failed", network, payer);
+    }
+
+    const transactionId = submitResponse.data.transactionId;
+    console.log(
+      "Transaction submitted via channel service, polling for status:",
+      transactionId,
+    );
+
+    // Poll for transaction status using remaining time budget
+    const remainingMs = deadlineMs - Date.now();
+    if (remainingMs <= 0) {
+      console.error("No time remaining for polling after submit");
+      return errorResponse("settle_channel_service_failed", network, payer);
+    }
+    const result = await pollTransactionStatus(
+      apiUrl,
+      apiKey,
+      transactionId,
+      remainingMs,
+    );
+
+    if (result.data?.status === "confirmed" && result.data?.hash) {
+      console.log(
+        "Transaction confirmed via channel service:",
+        result.data.hash,
+      );
+      return successResponse(result.data.hash, network, payer);
+    } else {
+      console.error("Channel service transaction failed:", result);
+      return errorResponse(
+        "settle_channel_service_failed",
+        network,
+        payer,
+        result.data?.hash ?? undefined,
       );
     }
   } catch (channelError) {
@@ -144,8 +232,8 @@ async function settleViaRelayer(
   func: xdr.HostFunction,
   authEntriesXdr: string[],
   relayer: Relayer,
-  paymentRequirements: PaymentRequirements,
   network: string,
+  deadlineMs: number,
   payer?: string,
 ): Promise<SettleResponse> {
   const invokeContractArgs = func.invokeContract();
@@ -173,7 +261,7 @@ async function settleViaRelayer(
   });
 
   const txResult = await relayer.sendTransaction({
-    network: paymentRequirements.network,
+    network,
     operations: [
       {
         type: "invoke_contract",
@@ -188,11 +276,11 @@ async function settleViaRelayer(
     ],
   });
 
-  // Wait for transaction confirmation
+  // Wait for transaction confirmation using remaining time budget
+  const remainingMs = deadlineMs - Date.now();
   const confirmedTx = await txResult.wait({
     interval: 500,
-    timeout:
-      (paymentRequirements.maxTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000,
+    timeout: Math.max(remainingMs, 0),
   });
 
   const txHash = (confirmedTx as StellarTransactionResponse).hash;
@@ -254,6 +342,11 @@ export async function settle(
   networkConfig: NetworkConfig,
 ): Promise<SettleResponse> {
   const { paymentPayload, paymentRequirements } = params;
+  const startTime = Date.now();
+  const timeoutMs =
+    (paymentRequirements.maxTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
+  const bufferMs = Math.min(BUFFER_MS, timeoutMs / 2);
+  const deadlineMs = startTime + timeoutMs - bufferMs;
 
   // Extract network from accepted field
   if (!paymentPayload.accepted) {
@@ -334,6 +427,7 @@ export async function settle(
         authEntriesXdr,
         networkConfig,
         network,
+        deadlineMs,
         payer,
       );
     } else {
@@ -341,8 +435,8 @@ export async function settle(
         func,
         authEntriesXdr,
         relayer,
-        paymentRequirements,
         network,
+        deadlineMs,
         payer,
       );
     }
