@@ -305,8 +305,10 @@ describe("stellar settle", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: false,
       status: 500,
-      statusText: "Internal Server Error",
-      text: async () => "Internal Server Error",
+      json: async () => ({
+        success: false,
+        data: { code: "INTERNAL_ERROR", error: "Internal Server Error" },
+      }),
     } as any);
 
     const networkConfig = {
@@ -372,6 +374,173 @@ describe("stellar settle", () => {
     const result = await settle(params as any, makeApi(), networkConfig);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe("settle_channel_service_failed");
+  });
+
+  test("retries on POOL_CAPACITY error and succeeds", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(verifyModule, "verify").mockResolvedValue({
+      isValid: true,
+      payer: "G-PAYER",
+    });
+
+    let callCount = 0;
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          // First call: POOL_CAPACITY error
+          return {
+            ok: false,
+            status: 503,
+            json: async () => ({
+              success: false,
+              data: { code: "POOL_CAPACITY", error: "All channels busy" },
+            }),
+          } as any;
+        }
+        if (callCount === 2) {
+          // Second call (retry): success with hash
+          return {
+            ok: true,
+            json: async () => ({
+              success: true,
+              data: { hash: "HASH_RETRY" },
+            }),
+          } as any;
+        }
+        throw new Error("Unexpected fetch call");
+      });
+
+    const networkConfig = {
+      ...baseNetworkConfig,
+      channel_service_api_url: "https://channel.service/submit",
+      channel_service_api_key: "channel-key",
+    };
+
+    const tx = buildInvokeTxBase64();
+    const params = {
+      paymentPayload: buildPaymentPayloadV2(tx),
+      paymentRequirements: buildPaymentRequirementsV2(),
+    };
+
+    const resultPromise = settle(params as any, makeApi(), networkConfig);
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.success).toBe(true);
+    expect(result.transaction).toBe("HASH_RETRY");
+    vi.useRealTimers();
+  });
+
+  test("does not retry on non-POOL_CAPACITY errors", async () => {
+    vi.spyOn(verifyModule, "verify").mockResolvedValue({
+      isValid: true,
+      payer: "G-PAYER",
+    });
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({
+        success: false,
+        data: { code: "INTERNAL_ERROR", error: "Something broke" },
+      }),
+    } as any);
+
+    const networkConfig = {
+      ...baseNetworkConfig,
+      channel_service_api_url: "https://channel.service/submit",
+      channel_service_api_key: "channel-key",
+    };
+
+    const tx = buildInvokeTxBase64();
+    const params = {
+      paymentPayload: buildPaymentPayloadV2(tx),
+      paymentRequirements: buildPaymentRequirementsV2(),
+    };
+
+    const result = await settle(params as any, makeApi(), networkConfig);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe("settle_channel_service_failed");
+  });
+
+  test("fails after exhausting all POOL_CAPACITY retries", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(verifyModule, "verify").mockResolvedValue({
+      isValid: true,
+      payer: "G-PAYER",
+    });
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({
+        success: false,
+        data: { code: "POOL_CAPACITY", error: "All channels busy" },
+      }),
+    } as any);
+
+    const networkConfig = {
+      ...baseNetworkConfig,
+      channel_service_api_url: "https://channel.service/submit",
+      channel_service_api_key: "channel-key",
+    };
+
+    const tx = buildInvokeTxBase64();
+    const params = {
+      paymentPayload: buildPaymentPayloadV2(tx),
+      paymentRequirements: buildPaymentRequirementsV2(),
+    };
+
+    const resultPromise = settle(params as any, makeApi(), networkConfig);
+    await vi.runAllTimersAsync();
+    const result = await resultPromise;
+
+    // 1 initial + 3 retries = 4 total
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe("settle_channel_service_failed");
+    vi.useRealTimers();
+  });
+
+  test("skips retry when insufficient time budget remains", async () => {
+    vi.spyOn(verifyModule, "verify").mockResolvedValue({
+      isValid: true,
+      payer: "G-PAYER",
+    });
+
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({
+        success: false,
+        data: { code: "POOL_CAPACITY", error: "All channels busy" },
+      }),
+    } as any);
+
+    const networkConfig = {
+      ...baseNetworkConfig,
+      channel_service_api_url: "https://channel.service/submit",
+      channel_service_api_key: "channel-key",
+    };
+
+    const tx = buildInvokeTxBase64();
+    const params = {
+      paymentPayload: buildPaymentPayloadV2(tx),
+      // Very short timeout so no time for retries
+      paymentRequirements: buildPaymentRequirementsV2({ maxTimeoutSeconds: 1 }),
+    };
+
+    const result = await settle(params as any, makeApi(), networkConfig);
+
+    // Should only attempt once since there's no time budget for backoff
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(result.success).toBe(false);
     expect(result.errorReason).toBe("settle_channel_service_failed");
   });
