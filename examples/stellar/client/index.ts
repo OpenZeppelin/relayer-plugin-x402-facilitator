@@ -1,8 +1,9 @@
 import { config } from "dotenv";
 import { wrapFetchWithPayment, decodePaymentResponseHeader } from "@x402/fetch";
 import { x402Client } from "@x402/core/client";
+import { Transaction } from "@stellar/stellar-sdk";
 import { ExactStellarScheme } from "@x402/stellar/exact/client";
-import { createEd25519Signer } from "@x402/stellar";
+import { createEd25519Signer, getNetworkPassphrase } from "@x402/stellar";
 
 config();
 
@@ -16,12 +17,15 @@ if (!stellarPrivateKey) {
 
 const serverUrl = process.env.SERVER_URL || "http://localhost:4021";
 const concurrentRequests = Number(process.env.CONCURRENT_REQUESTS) || 5;
+const stellarRpcUrl =
+  process.env.STELLAR_RPC_URL || "https://soroban-testnet.stellar.org";
 
 // --- Client setup ---
 
 const stellarSigner = createEd25519Signer(stellarPrivateKey);
+const rpcConfig = { url: stellarRpcUrl };
 const client = new x402Client();
-client.register("stellar:*", new ExactStellarScheme(stellarSigner));
+client.register("stellar:*", new ExactStellarScheme(stellarSigner, rpcConfig));
 
 const payFetch = wrapFetchWithPayment(fetch, client);
 
