@@ -92,11 +92,13 @@ async function callChannelService(
   });
 
   if (!response.ok) {
+    const bodyText = await response.text();
     let data: Record<string, unknown> | null = null;
     try {
-      data = (await response.json()) as Record<string, unknown>;
+      data = JSON.parse(bodyText) as Record<string, unknown>;
     } catch {
-      // Response body is not JSON – leave data as null
+      // Response body is not JSON – preserve raw text in data
+      data = { rawBody: bodyText };
     }
     throw new ChannelServiceError(response.status, data);
   }

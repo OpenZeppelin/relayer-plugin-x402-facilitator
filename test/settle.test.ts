@@ -95,6 +95,7 @@ describe("stellar settle", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -302,13 +303,14 @@ describe("stellar settle", () => {
       payer: "G-PAYER",
     });
 
+    const body = JSON.stringify({
+      success: false,
+      data: { code: "INTERNAL_ERROR", error: "Internal Server Error" },
+    });
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: false,
       status: 500,
-      json: async () => ({
-        success: false,
-        data: { code: "INTERNAL_ERROR", error: "Internal Server Error" },
-      }),
+      text: async () => body,
     } as any);
 
     const networkConfig = {
@@ -392,13 +394,14 @@ describe("stellar settle", () => {
         callCount++;
         if (callCount === 1) {
           // First call: POOL_CAPACITY error
+          const body = JSON.stringify({
+            success: false,
+            data: { code: "POOL_CAPACITY", error: "All channels busy" },
+          });
           return {
             ok: false,
             status: 503,
-            json: async () => ({
-              success: false,
-              data: { code: "POOL_CAPACITY", error: "All channels busy" },
-            }),
+            text: async () => body,
           } as any;
         }
         if (callCount === 2) {
@@ -433,7 +436,6 @@ describe("stellar settle", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(result.success).toBe(true);
     expect(result.transaction).toBe("HASH_RETRY");
-    vi.useRealTimers();
   });
 
   test("does not retry on non-POOL_CAPACITY errors", async () => {
@@ -442,13 +444,14 @@ describe("stellar settle", () => {
       payer: "G-PAYER",
     });
 
+    const body = JSON.stringify({
+      success: false,
+      data: { code: "INTERNAL_ERROR", error: "Something broke" },
+    });
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: false,
       status: 500,
-      json: async () => ({
-        success: false,
-        data: { code: "INTERNAL_ERROR", error: "Something broke" },
-      }),
+      text: async () => body,
     } as any);
 
     const networkConfig = {
@@ -477,13 +480,14 @@ describe("stellar settle", () => {
       payer: "G-PAYER",
     });
 
+    const body = JSON.stringify({
+      success: false,
+      data: { code: "POOL_CAPACITY", error: "All channels busy" },
+    });
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: false,
       status: 503,
-      json: async () => ({
-        success: false,
-        data: { code: "POOL_CAPACITY", error: "All channels busy" },
-      }),
+      text: async () => body,
     } as any);
 
     const networkConfig = {
@@ -506,7 +510,6 @@ describe("stellar settle", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(result.success).toBe(false);
     expect(result.errorReason).toBe("settle_channel_service_failed");
-    vi.useRealTimers();
   });
 
   test("skips retry when insufficient time budget remains", async () => {
@@ -515,13 +518,14 @@ describe("stellar settle", () => {
       payer: "G-PAYER",
     });
 
+    const body = JSON.stringify({
+      success: false,
+      data: { code: "POOL_CAPACITY", error: "All channels busy" },
+    });
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: false,
       status: 503,
-      json: async () => ({
-        success: false,
-        data: { code: "POOL_CAPACITY", error: "All channels busy" },
-      }),
+      text: async () => body,
     } as any);
 
     const networkConfig = {
