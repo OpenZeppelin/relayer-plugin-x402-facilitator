@@ -1,5 +1,11 @@
 # @openzeppelin/relayer-plugin-x402-facilitator
 
+## 0.3.0
+
+### Minor Changes
+
+- 8a7841e: feat: Add retries for channels pool capacity errors (#39)
+
 ## 0.2.0
 
 ### Minor Changes
