@@ -1,6 +1,6 @@
 {
   "name": "@openzeppelin/relayer-plugin-x402-facilitator",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "OpenZeppelin Relayer Plugin for X402 Facilitator",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
