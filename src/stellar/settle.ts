@@ -120,6 +120,7 @@ async function pollTransactionStatus(
   while (Date.now() < deadline) {
     const result = await callChannelService(apiUrl, apiKey, {
       getTransaction: { transactionId },
+      x402: true,
     });
 
     const status = result.data?.status;
