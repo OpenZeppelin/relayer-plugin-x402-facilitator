@@ -173,6 +173,7 @@ async function settleViaChannelService(
 
   try {
     // Submit with skipWait, retrying on POOL_CAPACITY errors with exponential backoff
+    // and with x402 flag to use the specific x402 channel service.
     let submitResponse!: ChannelServiceResponse;
     for (let attempt = 0; attempt <= MAX_SUBMIT_RETRIES; attempt++) {
       try {
@@ -180,6 +181,7 @@ async function settleViaChannelService(
           func: funcXdr,
           auth: authEntriesXdr,
           skipWait: true,
+          x402: true,
         });
         break; // Success – exit retry loop
       } catch (error) {
