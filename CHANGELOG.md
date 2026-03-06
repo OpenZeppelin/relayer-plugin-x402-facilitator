@@ -1,5 +1,11 @@
 # @openzeppelin/relayer-plugin-x402-facilitator
 
+## 0.4.0
+
+### Minor Changes
+
+- 19adb9c: feat: Adding x402 when send request to channels (#43)
+
 ## 0.3.0
 
 ### Minor Changes
