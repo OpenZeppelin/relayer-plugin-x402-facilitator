@@ -189,6 +189,7 @@ describe("stellar settle", () => {
       ...baseNetworkConfig,
       channel_service_api_url: "https://channel.service/submit",
       channel_service_api_key: "channel-key",
+      channel_service_fund_relayer_id: "x402-fund",
     };
 
     const tx = buildInvokeTxBase64();
@@ -203,10 +204,10 @@ describe("stellar settle", () => {
     // First call should include skipWait
     const firstCallBody = JSON.parse((fetchMock.mock.calls[0][1] as any).body);
     expect(firstCallBody.params.skipWait).toBe(true);
-    // Second call should be get-transaction with x402 flag
+    // Second call should be get-transaction with fundRelayerId
     const secondCallBody = JSON.parse((fetchMock.mock.calls[1][1] as any).body);
     expect(secondCallBody.params.getTransaction.transactionId).toBe("TX_ID_1");
-    expect(secondCallBody.params.x402).toBe(true);
+    expect(secondCallBody.params.fundRelayerId).toBe("x402-fund");
 
     expect(verifySpy).toHaveBeenCalled();
     expect(result.success).toBe(true);

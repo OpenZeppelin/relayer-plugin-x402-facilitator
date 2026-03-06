@@ -114,13 +114,14 @@ async function pollTransactionStatus(
   apiKey: string,
   transactionId: string,
   timeoutMs: number,
+  fundRelayerId?: string,
 ): Promise<ChannelServiceResponse> {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
     const result = await callChannelService(apiUrl, apiKey, {
       getTransaction: { transactionId },
-      x402: true,
+      ...(fundRelayerId ? { fundRelayerId } : {}),
     });
 
     const status = result.data?.status;
@@ -174,7 +175,8 @@ async function settleViaChannelService(
 
   try {
     // Submit with skipWait, retrying on POOL_CAPACITY errors with exponential backoff
-    // and with x402 flag to use the specific x402 channel service.
+    // and with fundRelayerId to use the dedicated fund relayer for fee-bumping.
+    const fundRelayerId = networkConfig.channel_service_fund_relayer_id;
     let submitResponse!: ChannelServiceResponse;
     for (let attempt = 0; attempt <= MAX_SUBMIT_RETRIES; attempt++) {
       try {
@@ -182,7 +184,7 @@ async function settleViaChannelService(
           func: funcXdr,
           auth: authEntriesXdr,
           skipWait: true,
-          x402: true,
+          ...(fundRelayerId ? { fundRelayerId } : {}),
         });
         break; // Success – exit retry loop
       } catch (error) {
@@ -261,6 +263,7 @@ async function settleViaChannelService(
       apiKey,
       transactionId,
       remainingMs,
+      fundRelayerId,
     );
 
     if (result.data?.status === "confirmed" && result.data?.hash) {
