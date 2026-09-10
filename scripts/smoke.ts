@@ -198,14 +198,15 @@ async function buildTransferWithSignedAuth(opts: {
     subInvocations: [],
   });
 
-  // Sign the auth entry (this is what the payer signs — not the envelope)
-  const signedAuthEntry = await authorizeInvocation(
-    keypair,
-    validUntil,
-    rootInv,
-    fromAddress,
-    passphrase,
-  );
+  // Sign the auth entry (this is what the payer signs, not the envelope).
+  // stellar-sdk v17 defaults to CAP-71 SOROBAN_CREDENTIALS_ADDRESS_V2 credentials.
+  const signedAuthEntry = await authorizeInvocation({
+    signer: keypair,
+    validUntilLedgerSeq: validUntil,
+    invocation: rootInv,
+    publicKey: fromAddress,
+    networkPassphrase: passphrase,
+  });
 
   // Build the transaction with signed auth but unsigned envelope
   const op = Operation.invokeHostFunction({
@@ -227,7 +228,7 @@ async function buildTransferWithSignedAuth(opts: {
     .build();
 
   // Return XDR WITHOUT signing the envelope
-  return tx.toXDR();
+  return tx.toXdr();
 }
 
 /**

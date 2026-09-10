@@ -77,57 +77,55 @@ export function networksMatch(network1: string, network2: string): boolean {
  * Inspects the XDR type to determine the correct JSON representation.
  */
 export function scValToJsonArg(scVal: xdr.ScVal): ScVal {
-  const scValType = scVal.switch().name;
-
-  switch (scValType) {
+  switch (scVal.type) {
     case "scvAddress": {
       const address = Address.fromScVal(scVal).toString();
       return { address };
     }
     case "scvI128": {
-      const i128 = scVal.i128();
+      const i128 = scVal.i128;
       return {
         i128: {
-          hi: i128.hi().toString(),
-          lo: i128.lo().toString(),
+          hi: i128.hi.toString(),
+          lo: i128.lo.toString(),
         },
       };
     }
     case "scvU128": {
-      const u128 = scVal.u128();
+      const u128 = scVal.u128;
       return {
         u128: {
-          hi: u128.hi().toString(),
-          lo: u128.lo().toString(),
+          hi: u128.hi.toString(),
+          lo: u128.lo.toString(),
         },
       };
     }
     case "scvI64":
-      return { i64: scVal.i64().toString() };
+      return { i64: scVal.i64.toString() };
     case "scvU64":
-      return { u64: scVal.u64().toString() };
+      return { u64: scVal.u64.toString() };
     case "scvI32":
-      return { i32: scVal.i32() };
+      return { i32: scVal.i32 };
     case "scvU32":
-      return { u32: scVal.u32() };
+      return { u32: scVal.u32 };
     case "scvBool":
-      return { bool: scVal.b() };
+      return { bool: scVal.b };
     case "scvString":
-      return { string: scVal.str().toString() };
+      return { string: scVal.str.toString() };
     case "scvSymbol":
-      return { symbol: scVal.sym().toString() };
+      return { symbol: scVal.sym.toString() };
     case "scvBytes":
-      return { bytes: scVal.bytes().toString("hex") };
+      return { bytes: Buffer.from(scVal.bytes.toBytes()).toString("hex") };
     case "scvVec": {
-      const vec = scVal.vec();
-      return { vec: Array.from((vec ?? []).values()).map(scValToJsonArg) };
+      const vec = scVal.vec;
+      return { vec: (vec ?? []).map(scValToJsonArg) };
     }
     case "scvMap": {
-      const map = scVal.map();
+      const map = scVal.map;
       return {
-        map: Array.from(map ?? []).map((entry) => ({
-          key: scValToJsonArg(entry.key()),
-          val: scValToJsonArg(entry.val()),
+        map: (map ?? []).map((entry) => ({
+          key: scValToJsonArg(entry.key),
+          val: scValToJsonArg(entry.val),
         })),
       };
     }
@@ -140,10 +138,65 @@ export function scValToJsonArg(scVal: xdr.ScVal): ScVal {
 }
 
 /**
+ * Credential types that carry a payer signature over the invocation and are
+ * accepted by the facilitator.
+ *
+ * - `sorobanCredentialsAddress`: legacy (pre Protocol 27) address credentials
+ * - `sorobanCredentialsAddressV2`: CAP-71 address credentials, the default
+ *   emitted by stellar-sdk v17 clients
+ *
+ * `sorobanCredentialsAddressWithDelegates` (CAP-71 delegated signing) is not
+ * accepted: it lets signers other than the payer authorize the transfer.
+ * `sorobanCredentialsSourceAccount` is not accepted: it would be authorized by
+ * the relayer's own account when the transaction is rebuilt.
+ */
+const ACCEPTED_CREDENTIAL_TYPES: ReadonlySet<xdr.SorobanCredentialsVariantName> =
+  new Set(["sorobanCredentialsAddress", "sorobanCredentialsAddressV2"]);
+
+/**
+ * Returns the address credentials carried by an auth entry, regardless of
+ * which address-bearing credential variant is used, or null for
+ * `sorobanCredentialsSourceAccount`.
+ */
+export function getAddressCredentials(
+  credentials: xdr.SorobanCredentials,
+): xdr.SorobanAddressCredentials | null {
+  switch (credentials.type) {
+    case "sorobanCredentialsAddress":
+      return credentials.address;
+    case "sorobanCredentialsAddressV2":
+      return credentials.addressV2;
+    case "sorobanCredentialsAddressWithDelegates":
+      return credentials.addressWithDelegates.addressCredentials;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Returns true when an address credential carries an actual signature.
+ *
+ * Mirrors the SDK's own `signaturePresent` rule: `scvVoid` is unsigned, and so
+ * is an empty or null `scvVec`, which is the placeholder `authorizeInvocation`
+ * writes before `authorizeEntry` fills in the signature. Anything else counts
+ * as signed.
+ */
+export function isSignaturePresent(signature: xdr.ScVal): boolean {
+  switch (signature.type) {
+    case "scvVoid":
+      return false;
+    case "scvVec":
+      return (signature.vec ?? []).length > 0;
+    default:
+      return true;
+  }
+}
+
+/**
  * Extracts expiration ledger sequences from auth entries.
  *
- * For Soroban transactions with `sorobanCredentialsAddress` type credentials,
- * the signatureExpirationLedger field specifies when the authorization expires.
+ * For Soroban transactions with address type credentials, the
+ * signatureExpirationLedger field specifies when the authorization expires.
  *
  * @returns Array of expiration ledger numbers from all address-credential auth entries
  */
@@ -154,13 +207,10 @@ export function getExpirationLedgersFromAuthEntries(
 
   for (const authEntry of authEntries) {
     try {
-      const credentials = authEntry.credentials();
-      const credentialsType = credentials.switch().name;
+      const addressCredentials = getAddressCredentials(authEntry.credentials);
 
-      if (credentialsType === "sorobanCredentialsAddress") {
-        const addressCredentials = credentials.address();
-        const expirationLedger = addressCredentials.signatureExpirationLedger();
-        expirationLedgers.push(expirationLedger);
+      if (addressCredentials) {
+        expirationLedgers.push(addressCredentials.signatureExpirationLedger);
       }
       // sorobanCredentialsSourceAccount doesn't have an expiration ledger
     } catch (error) {
@@ -187,13 +237,11 @@ export function getAllAddressesFromAuthEntries(
 
   for (const authEntry of authEntries) {
     try {
-      const credentials = authEntry.credentials();
-      const credentialsType = credentials.switch().name;
+      const addressCredentials = getAddressCredentials(authEntry.credentials);
 
-      if (credentialsType === "sorobanCredentialsAddress") {
-        const addressCredentials = credentials.address();
+      if (addressCredentials) {
         const address = Address.fromScAddress(
-          addressCredentials.address(),
+          addressCredentials.address,
         ).toString();
         addresses.push(address);
       }
@@ -211,8 +259,9 @@ export function getAllAddressesFromAuthEntries(
  * Performs the following checks:
  * 1. Facilitator address MUST NOT appear in any authorization entries
  *    (prevents the facilitator from being tricked into authorizing unintended actions)
- * 2. All entries MUST use `sorobanCredentialsAddress` credential type
- *    (other credential types like `sorobanCredentialsSourceAccount` are rejected per spec)
+ * 2. All entries MUST use an accepted address credential type
+ *    (`sorobanCredentialsAddress` or `sorobanCredentialsAddressV2`); other
+ *    types like `sorobanCredentialsSourceAccount` or delegated credentials are rejected
  * 3. No entries may contain sub-invocations
  *    (sub-invocations could authorize additional token transfers or operations)
  *
@@ -247,19 +296,18 @@ export function validateAuthEntries(
   // Validate credential types and sub-invocations in a single loop
   for (const authEntry of authEntries) {
     try {
-      const credentials = authEntry.credentials();
-      const credentialsType = credentials.switch().name;
+      const credentialsType = authEntry.credentials.type;
 
-      // All entries must use sorobanCredentialsAddress
-      if (credentialsType !== "sorobanCredentialsAddress") {
+      // All entries must use an accepted address credential type
+      if (!ACCEPTED_CREDENTIAL_TYPES.has(credentialsType)) {
         console.error(
-          `Unsupported credential type: ${credentialsType}. Only sorobanCredentialsAddress is allowed.`,
+          `Unsupported credential type: ${credentialsType}. Only ${[...ACCEPTED_CREDENTIAL_TYPES].join(", ")} are allowed.`,
         );
         return "invalid_exact_stellar_payload_unsupported_credential_type";
       }
 
       // No sub-invocations allowed
-      const subInvocations = authEntry.rootInvocation().subInvocations();
+      const subInvocations = authEntry.rootInvocation.subInvocations;
       if (subInvocations.length > 0) {
         console.error(
           `Security violation: auth entry has ${subInvocations.length} sub-invocation(s)`,
@@ -279,7 +327,7 @@ export function validateAuthEntries(
  * Extracts signed addresses from auth entries attached to the operation.
  *
  * For Soroban transactions, the client signs auth entries (not the transaction envelope).
- * Each auth entry with `sorobanCredentialsAddress` type should have a signature
+ * Each auth entry with address type credentials should have a signature
  * in its credentials.
  */
 export function getSignedAddressesFromAuthEntries(
@@ -290,22 +338,17 @@ export function getSignedAddressesFromAuthEntries(
 
   for (const authEntry of authEntries) {
     try {
-      const credentials = authEntry.credentials();
-      const credentialsType = credentials.switch().name;
+      const addressCredentials = getAddressCredentials(authEntry.credentials);
 
-      if (credentialsType === "sorobanCredentialsAddress") {
-        const addressCredentials = credentials.address();
+      if (addressCredentials) {
         const address = Address.fromScAddress(
-          addressCredentials.address(),
+          addressCredentials.address,
         ).toString();
 
-        // Check if the auth entry has a signature
-        // A signed auth entry has a non-void signature in its credentials
-        const signature = addressCredentials.signature();
-        const signatureType = signature.switch().name;
-
-        // scvVoid means unsigned, anything else (typically scvVec with signature data) means signed
-        const isSigned = signatureType !== "scvVoid";
+        // Check if the auth entry has a signature.
+        // scvVoid or an empty scvVec placeholder means unsigned; a populated
+        // scvVec (or any other value) means signed.
+        const isSigned = isSignaturePresent(addressCredentials.signature);
 
         if (isSigned) {
           signedAddresses.push(address);
@@ -376,18 +419,18 @@ export function parseTransferEventsFromSimulation(
       // Handle both string (base64 XDR) and already decoded DiagnosticEvent
       let diagnosticEvent: xdr.DiagnosticEvent;
       if (typeof rawEvent === "string") {
-        diagnosticEvent = xdr.DiagnosticEvent.fromXDR(rawEvent, "base64");
-      } else if (rawEvent && typeof rawEvent.event === "function") {
+        diagnosticEvent = xdr.DiagnosticEvent.fromXdr(rawEvent, "base64");
+      } else if (rawEvent && typeof rawEvent.event === "object") {
         diagnosticEvent = rawEvent;
       } else {
         continue;
       }
 
-      const event = diagnosticEvent.event();
+      const event = diagnosticEvent.event;
 
       // Get event type - we only care about contract events
       // ContractEventType: 0 = System, 1 = Contract, 2 = Diagnostic
-      const eventTypeName = event.type().name;
+      const eventTypeName = event.type.name;
 
       if (eventTypeName !== "contract") {
         // Not a contract event, skip system and diagnostic events
@@ -396,21 +439,18 @@ export function parseTransferEventsFromSimulation(
       }
 
       // For contract events, contract ID is required
-      const contractIdBuffer = event.contractId();
-      if (!contractIdBuffer) {
+      const contractIdBytes = event.contractId;
+      if (!contractIdBytes) {
         missingContractIdDetected = true;
         continue;
       }
 
-      // Convert contract ID to string address
-      // contractId() returns a Hash (Opaque type), convert to buffer
-      const contractId = StrKey.encodeContract(
-        Buffer.from(contractIdBuffer as unknown as Uint8Array),
-      );
+      // Convert contract ID (32 opaque bytes) to a C... strkey address
+      const contractId = StrKey.encodeContract(contractIdBytes.toBytes());
 
-      const body = event.body().v0();
-      const topics = body.topics();
-      const data = body.data();
+      const body = event.body.v0;
+      const topics = body.topics;
+      const data = body.data;
 
       // Check if this is a transfer event
       // Topics should be: [Symbol("transfer"), Address(from), Address(to)]
@@ -421,12 +461,12 @@ export function parseTransferEventsFromSimulation(
 
       // First topic should be the symbol "transfer"
       const firstTopic = topics[0];
-      if (firstTopic.switch().name !== "scvSymbol") {
+      if (firstTopic.type !== "scvSymbol") {
         nonTransferContractEventDetected = true;
         continue;
       }
 
-      const eventName = firstTopic.sym().toString();
+      const eventName = firstTopic.sym.toString();
       if (eventName !== "transfer") {
         nonTransferContractEventDetected = true;
         continue;
@@ -440,14 +480,14 @@ export function parseTransferEventsFromSimulation(
       let to: string;
 
       // Handle different address formats in topics
-      if (fromTopic.switch().name === "scvAddress") {
+      if (fromTopic.type === "scvAddress") {
         from = Address.fromScVal(fromTopic).toString();
       } else {
         nonTransferContractEventDetected = true;
         continue; // Not a standard transfer event format
       }
 
-      if (toTopic.switch().name === "scvAddress") {
+      if (toTopic.type === "scvAddress") {
         to = Address.fromScVal(toTopic).toString();
       } else {
         nonTransferContractEventDetected = true;
@@ -456,7 +496,7 @@ export function parseTransferEventsFromSimulation(
 
       // Extract amount from data (should be i128)
       let amount: bigint;
-      if (data.switch().name === "scvI128") {
+      if (data.type === "scvI128") {
         amount = scValToNative(data) as bigint;
       } else {
         // Try to extract as native value

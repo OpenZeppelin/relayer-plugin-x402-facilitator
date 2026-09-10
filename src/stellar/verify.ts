@@ -190,16 +190,16 @@ export async function verify(
     const invokeOp = operation as Operation.InvokeHostFunction;
     const func = invokeOp.func;
 
-    if (!func || func.switch().name !== "hostFunctionTypeInvokeContract") {
+    if (!func || func.type !== "hostFunctionTypeInvokeContract") {
       return invalidResponse("invalid_exact_stellar_payload_wrong_operation");
     }
 
-    const invokeContractArgs = func.invokeContract();
+    const invokeContractArgs = func.invokeContract;
     const contractAddress = Address.fromScAddress(
-      invokeContractArgs.contractAddress(),
+      invokeContractArgs.contractAddress,
     ).toString();
-    const functionName = invokeContractArgs.functionName().toString();
-    const args = invokeContractArgs.args();
+    const functionName = invokeContractArgs.functionName.toString();
+    const args = invokeContractArgs.args;
 
     // Validate contract address matches the required asset (token contract)
     if (contractAddress !== paymentRequirements.asset) {

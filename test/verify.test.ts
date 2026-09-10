@@ -492,7 +492,7 @@ describe("stellar verify", () => {
       payTo: "G-PAYEE",
       amount: 200n,
       funcOverrides: {
-        functionName: () => Buffer.from("approve"),
+        functionName: "approve",
       },
     });
     const payload = buildPaymentPayloadV2(tx, {
