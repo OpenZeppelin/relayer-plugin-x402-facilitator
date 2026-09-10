@@ -9,9 +9,9 @@ export type TxBuildOptions = {
   opSource?: string;
   fee?: string;
   funcOverrides?: Partial<{
-    contractAddress: () => string;
-    functionName: () => Buffer;
-    args: () => any[];
+    contractAddress: string;
+    functionName: string;
+    args: any[];
   }>;
 };
 
@@ -21,6 +21,10 @@ export type TxBuildOptions = {
  *
  * Note: We use a special marker to indicate this is a test transaction
  * and include the full operation object with functions intact.
+ *
+ * The fake XDR objects mirror the stellar-sdk v17 shape: discriminated
+ * unions expose a `type` string literal and struct fields are plain
+ * readonly properties (no accessor calls).
  */
 export function buildInvokeTxBase64(options: TxBuildOptions = {}): string {
   const {
@@ -28,7 +32,7 @@ export function buildInvokeTxBase64(options: TxBuildOptions = {}): string {
     payTo = "G-PAYEE",
     amount = 200n,
     asset = "ASSET_CONTRACT",
-    authEntries = [{ toXDR: () => "AUTHXDR" }],
+    authEntries = [{ toXdr: () => "AUTHXDR" }],
     signatures = [],
     source = "CLIENT_SOURCE",
     opSource,
@@ -39,16 +43,16 @@ export function buildInvokeTxBase64(options: TxBuildOptions = {}): string {
   const amountStr = BigInt(amount).toString(); // avoid BigInt in JSON
 
   const invokeContractData = {
-    contractAddress: () => asset,
-    functionName: () => Buffer.from("transfer"),
-    args: () => [{ value: payer }, { value: payTo }, { value: amountStr }],
+    contractAddress: asset,
+    functionName: "transfer",
+    args: [{ value: payer }, { value: payTo }, { value: amountStr }],
     ...funcOverrides,
   };
 
   const func = {
-    switch: () => ({ name: "hostFunctionTypeInvokeContract" }),
-    invokeContract: () => invokeContractData,
-    toXDR: () => "FUNCXDR",
+    type: "hostFunctionTypeInvokeContract",
+    invokeContract: invokeContractData,
+    toXdr: () => "FUNCXDR",
   };
 
   const operation = {

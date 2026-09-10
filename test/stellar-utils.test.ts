@@ -263,15 +263,15 @@ describe("stellar utils", () => {
     function mockAuthEntry(stellarAddress: string) {
       const addr = new Address(stellarAddress);
       return {
-        credentials: () => ({
-          switch: () => ({ name: "sorobanCredentialsAddress" }),
-          address: () => ({
-            address: () => addr.toScAddress(),
-          }),
-        }),
-        rootInvocation: () => ({
-          subInvocations: () => [],
-        }),
+        credentials: {
+          type: "sorobanCredentialsAddress",
+          address: {
+            address: addr.toScAddress(),
+          },
+        },
+        rootInvocation: {
+          subInvocations: [],
+        },
       } as any;
     }
 

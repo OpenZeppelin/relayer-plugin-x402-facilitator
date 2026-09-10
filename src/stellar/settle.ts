@@ -156,14 +156,14 @@ async function pollTransactionStatus(
  * Extracts host function and auth entries as XDR and submits to channel service.
  */
 async function settleViaChannelService(
-  func: xdr.HostFunction,
+  func: xdr.HostFunctionInvokeContract,
   authEntriesXdr: string[],
   networkConfig: NetworkConfig,
   network: string,
   deadlineMs: number,
   payer?: string,
 ): Promise<SettleResponse> {
-  const funcXdr = func.toXDR("base64");
+  const funcXdr = func.toXdr("base64");
   const apiUrl = networkConfig.channel_service_api_url!;
   const apiKey = networkConfig.channel_service_api_key!;
 
@@ -296,25 +296,25 @@ async function settleViaChannelService(
  * Converts operation details to JSON format and submits via relayer.
  */
 async function settleViaRelayer(
-  func: xdr.HostFunction,
+  func: xdr.HostFunctionInvokeContract,
   authEntriesXdr: string[],
   relayer: Relayer,
   network: string,
   deadlineMs: number,
   payer?: string,
 ): Promise<SettleResponse> {
-  const invokeContractArgs = func.invokeContract();
+  const invokeContractArgs = func.invokeContract;
 
   // Convert contract address from ScAddress to string
   const contractAddress = Address.fromScAddress(
-    invokeContractArgs.contractAddress(),
+    invokeContractArgs.contractAddress,
   ).toString();
 
   // Convert function name from ScSymbol to string
-  const functionName = invokeContractArgs.functionName().toString();
+  const functionName = invokeContractArgs.functionName.toString();
 
   // Convert XDR args to JSON format for the relayer API
-  const args = invokeContractArgs.args();
+  const args = invokeContractArgs.args;
   const jsonArgs: ScVal[] = [];
   for (let i = 0; i < args.length; i++) {
     jsonArgs.push(scValToJsonArg(args[i]));
@@ -471,7 +471,7 @@ export async function settle(
     const operation = transaction.operations[0] as Operation.InvokeHostFunction;
     const func = operation.func;
 
-    if (!func || func.switch().name !== "hostFunctionTypeInvokeContract") {
+    if (!func || func.type !== "hostFunctionTypeInvokeContract") {
       return errorResponse(
         "invalid_exact_stellar_payload_wrong_operation",
         network,
@@ -481,7 +481,7 @@ export async function settle(
 
     // Extract signed auth entries (contain the user's signatures)
     const authEntries = operation.auth || [];
-    const authEntriesXdr = authEntries.map((entry) => entry.toXDR("base64"));
+    const authEntriesXdr = authEntries.map((entry) => entry.toXdr("base64"));
 
     // 4. Submit transaction via channel service or relayer
     const useChannelService =
