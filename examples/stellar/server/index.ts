@@ -27,7 +27,7 @@ if (!relayerApiKey) {
 }
 
 const stellarNetwork = (process.env.STELLAR_NETWORK ||
-  "stellar:pubnet") as `${string}:${string}`;
+  "stellar:testnet") as `${string}:${string}`;
 const port = Number(process.env.PORT) || 4021;
 
 // --- Facilitator client ---

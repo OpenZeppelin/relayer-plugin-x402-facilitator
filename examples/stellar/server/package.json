@@ -7,9 +7,9 @@
     "start": "npx tsx index.ts"
   },
   "dependencies": {
-    "@x402/core": "^2.4.0",
-    "@x402/express": "^2.4.0",
-    "@x402/stellar": "file:../../../x402/typescript/packages/mechanisms/stellar/x402-stellar-2.3.0.tgz",
+    "@x402/core": "^2.28.0",
+    "@x402/express": "^2.28.0",
+    "@x402/stellar": "^2.28.0",
     "dotenv": "^16.5.0",
     "express": "^4.21.2"
   },

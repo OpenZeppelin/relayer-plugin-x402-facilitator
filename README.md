@@ -4,20 +4,27 @@
 
 OpenZeppelin Relayer plugin that implements the x402 facilitator API so you can serve x402 payments directly from a Relayer instance. Works with the Coinbase x402 ecosystem (e.g., `@x402/express`) and exposes the expected `/verify`, `/settle`, and `/supported` endpoints under the Relayer plugin router.
 
-**This version supports x402 v2 specification.** For x402 v1 support, please use a previous version of this plugin (check git history for v1-compatible releases).
+**This plugin implements the x402 v2 specification.** Every published release on npm is x402 v2 only. Earlier x402 v1 code exists only in the git history before the x402 v2 merge (`60027e4`) and was never released.
 
 ## What you get
 
 - x402 facilitator API implemented as a Relayer plugin (Stellar support today)
-- Uses your Relayer accounts/signers to verify and settle payments
+- Uses your Relayer accounts/signers to verify and settle payments, sponsoring network fees for payers
 - Supports multiple networks via config, including allowed assets per network
 - Optional channel service integration for Stellar throughput
+
+## Quick start
+
+The fastest way to get a working setup is the ready-made example in the Relayer repository: [`examples/x402-facilitator-plugin`](https://github.com/OpenZeppelin/openzeppelin-relayer/tree/main/examples/x402-facilitator-plugin). It includes a Docker Compose file, a Relayer `config.json` with a Stellar testnet relayer and this plugin already wired in, and step by step instructions for creating keys, generating an API key, and funding the relayer account.
+
+The rest of this README explains each piece so you can add the plugin to your own Relayer.
 
 ## Prerequisites
 
 - Node.js 22.18+
 - pnpm 10+
-- An OpenZeppelin Relayer with at least one configured relayer account for each network you plan to serve
+- An [OpenZeppelin Relayer](https://docs.openzeppelin.com/relayer) instance
+- For each network you plan to serve, a Relayer account (relayer + signer) on that network. Unless you settle through the [Channels service](#using-with-stellar-channels-service), this account is the fee payer for every settlement, so it must be funded with XLM.
 
 ## Install
 
@@ -35,20 +42,45 @@ pnpm build
 
 ## Wire it into the Relayer
 
-1. Create a plugin wrapper (example path).
+### 1. Create a plugin wrapper
 
-```
-plugins/x402/index.ts
-```
+Create a file that re-exports the plugin handler, for example `plugins/x402/index.ts`:
 
 ```ts
 export { handler } from "@openzeppelin/relayer-plugin-x402-facilitator";
 ```
 
-2. Add the plugin entry to your Relayer `config.json` (adjust `path` to your wrapper location or to the provided example file if you copied it, e.g., `examples/x402-facilitator/handler.ts`):
+### 2. Configure the Relayer
+
+Add a Stellar relayer, its signer, and the plugin entry to your Relayer `config.json`. Set the plugin `path` to the wrapper from step 1.
 
 ```json
 {
+  "relayers": [
+    {
+      "id": "stellar-example",
+      "name": "Stellar Example",
+      "network": "testnet",
+      "paused": false,
+      "network_type": "stellar",
+      "signer_id": "local-signer",
+      "policies": {
+        "fee_payment_strategy": "relayer",
+        "min_balance": 0
+      }
+    }
+  ],
+  "signers": [
+    {
+      "id": "local-signer",
+      "type": "local",
+      "config": {
+        "path": "config/keys/local-signer.json",
+        "passphrase": { "type": "env", "value": "KEYSTORE_PASSPHRASE" }
+      }
+    }
+  ],
+  "networks": "./config/networks",
   "plugins": [
     {
       "id": "x402",
@@ -76,16 +108,41 @@ export { handler } from "@openzeppelin/relayer-plugin-x402-facilitator";
 }
 ```
 
+Notes on the plugin entry:
+
+- `allow_get_invocation` must be `true`. The x402 resource server packages (`@x402/core` and everything built on it) call `GET /supported` on startup, and without this flag the call is rejected and the resource server cannot initialize.
+- `raw_response` must be `true` so the plugin's response is returned as-is, in the shape x402 clients expect.
+- The plugin `id` becomes part of the URL: with `"id": "x402"`, the facilitator URL is `http://<relayer-host>/api/v1/plugins/x402/call`.
+
+For signer types other than a local keystore (AWS KMS, GCP KMS, Turnkey, and others) and for creating keys and API keys, see the [Relayer documentation](https://docs.openzeppelin.com/relayer).
+
+### 3. Fund the relayer account
+
+Start the Relayer, look up the relayer address, and fund it with XLM:
+
+```bash
+curl -H "Authorization: Bearer <RELAYER_API_KEY>" \
+  http://localhost:8080/api/v1/relayers/stellar-example
+
+# testnet only
+curl "https://friendbot.stellar.org?addr=<RELAYER_ADDRESS>"
+```
+
 ### Network config reference
 
 Each object in `config.networks`:
 
-- `network`: x402 network identifier (e.g., `stellar:testnet`)
-- `type`: `"stellar"` (current support)
-- `relayer_id`: ID of the Relayer account to use for this network
-- `assets`: list of allowed assets (issuer addresses for Stellar)
-- `channel_service_api_url` / `channel_service_api_key` (optional): enable channel service acceleration for Stellar
-- `channel_service_fund_relayer_address` (optional): on-chain signer address of the channel service fund relayer, used in `/supported` response and security checks
+| Field                                  | Required | Description                                                                                                                                                                                                                                                                                    |
+| -------------------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `network`                              | Yes      | x402 network identifier: `stellar:testnet` or `stellar:pubnet`                                                                                                                                                                                                                                 |
+| `type`                                 | Yes      | `"stellar"` (current support)                                                                                                                                                                                                                                                                  |
+| `relayer_id`                           | Yes      | ID of the Relayer relayer used for this network. Without Channels it signs and pays fees for settlements, and its address is reported in `/supported`                                                                                                                                          |
+| `assets`                               | Yes      | Allowed token contract addresses (`C...`). Payments for any other asset are rejected at verify. For USDC, use its Stellar Asset Contract address: `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` on testnet, `CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75` on mainnet |
+| `maxTransactionFeeStroops`             | No       | Upper bound, in stroops, on the fee of a submitted payment transaction. Payments whose fee exceeds it are rejected at verify                                                                                                                                                                   |
+| `channel_service_api_url`              | No       | Channels service URL. Together with `channel_service_api_key`, routes settlement through Channels. See [Using with Stellar Channels Service](#using-with-stellar-channels-service)                                                                                                             |
+| `channel_service_api_key`              | No       | Channels service API key                                                                                                                                                                                                                                                                       |
+| `channel_service_fund_relayer_id`      | No       | ID of the Channels fund relayer that should fee-bump settlements. Passed to Channels on each submission                                                                                                                                                                                        |
+| `channel_service_fund_relayer_address` | No       | On-chain address of that fund relayer. Reported in `/supported` instead of the `relayer_id` address, and protected by verify from being used as a transfer source                                                                                                                              |
 
 ### Exposed routes
 
@@ -94,7 +151,9 @@ Routes are called through the Relayer plugin call endpoint: `POST /api/v1/plugin
 - `/` or ``: info
 - `/verify`: x402 v2 verify
 - `/settle`: x402 v2 settle
-- `/supported`: discovery of supported payment kinds (returns v2 format)
+- `/supported`: discovery of supported payment kinds (returns v2 format). Also available via `GET` when `allow_get_invocation` is enabled
+
+All routes use standard Relayer auth: send `Authorization: Bearer <RELAYER_API_KEY>`.
 
 ### x402 v2 Specification
 
@@ -125,6 +184,8 @@ The `/supported` endpoint returns data in the following v2 format:
 }
 ```
 
+The address in `signers` is the account that pays settlement fees: the `relayer_id` address, or `channel_service_fund_relayer_address` when set.
+
 ## Using with x402 packages (e.g., x402-express)
 
 Point the facilitator to your Relayer plugin URL and pass the Relayer API key via `createAuthHeaders`.
@@ -132,6 +193,7 @@ Point the facilitator to your Relayer plugin URL and pass the Relayer API key vi
 ```text
 STELLAR_ADDRESS=
 FACILITATOR_URL=http://localhost:8080/api/v1/plugins/x402/call
+RELAYER_API_KEY=
 ```
 
 ```typescript
@@ -142,26 +204,23 @@ import { ExactStellarScheme } from "@x402/stellar/exact/server";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 config();
 
-const stellarAddress = process.env.STELLAR_ADDRESS as string | undefined;
-
-// Validate stellar address is provided
-if (!stellarAddress) {
-  console.error("❌ STELLAR_ADDRESS is required");
-  process.exit(1);
-}
-
+const stellarAddress = process.env.STELLAR_ADDRESS;
 const facilitatorUrl = process.env.FACILITATOR_URL;
-if (!facilitatorUrl) {
-  console.error("❌ FACILITATOR_URL environment variable is required");
+const relayerApiKey = process.env.RELAYER_API_KEY;
+
+if (!stellarAddress || !facilitatorUrl || !relayerApiKey) {
+  console.error(
+    "STELLAR_ADDRESS, FACILITATOR_URL and RELAYER_API_KEY are required",
+  );
   process.exit(1);
 }
+
 const facilitatorClient = new HTTPFacilitatorClient({
   url: facilitatorUrl,
   createAuthHeaders: async () => ({
-    // Use your Relayer API key for the plugin
-    verify: { Authorization: "Bearer RELAYER_API_KEY" },
-    settle: { Authorization: "Bearer RELAYER_API_KEY" },
-    supported: { Authorization: "Bearer RELAYER_API_KEY" },
+    verify: { Authorization: `Bearer ${relayerApiKey}` },
+    settle: { Authorization: `Bearer ${relayerApiKey}` },
+    supported: { Authorization: `Bearer ${relayerApiKey}` },
   }),
 });
 
@@ -204,12 +263,23 @@ app.listen(4021, () => {
 });
 ```
 
-## Calls and auth
+A complete, runnable version of this server, plus a paying client, is in [`examples/stellar`](examples/stellar/).
 
-- **Auth:** The plugin uses standard Relayer auth. Send `Authorization: Bearer <RELAYER_API_KEY>` to each endpoint.
-- **Verify:** `POST /api/v1/plugins/x402/call/verify`
-- **Settle:** `POST /api/v1/plugins/x402/call/settle`
-- **Supported:** `POST /api/v1/plugins/x402/call/supported` (or `GET` if `allow_get_invocation` is enabled)
+## Testing your setup
+
+There are two ways to test a running facilitator:
+
+- **End to end with the examples:** the [testing guide](examples/stellar/README.md) runs the example server and client against your facilitator. It covers the account requirements (funding, USDC trustlines), checking `/supported`, running paid requests, and verifying the settled transactions on chain.
+- **Smoke test script:** [`scripts/smoke.ts`](scripts/smoke.ts) calls the facilitator directly, without a resource server. It checks `/supported`, builds and signs a USDC transfer, runs `/verify` and `/settle`, and can confirm on chain which account fee-bumped the settlement. It uses a key from the `stellar` CLI (`stellar keys`), and that account needs a trustline and balance for the test asset.
+
+  ```bash
+  npx tsx scripts/smoke.ts \
+    --api-key <API_KEY> \
+    --base-url <FACILITATOR_URL> \
+    --verify-fee-bump-source <EXPECTED_FEE_PAYER_ADDRESS>
+  ```
+
+  See the header of the script for all flags.
 
 ## Using with Stellar Channels Service
 
@@ -222,7 +292,7 @@ For high-throughput x402 payment settlement, you can connect the plugin with the
 - **Zero infrastructure overhead**: No need to manage channel accounts or fund accounts yourself
 - **Higher throughput**: Avoids sequence number conflicts that can occur when settling many payments through a single relayer account
 
-Add `channel_service_api_url` and `channel_service_api_key` to your network config:
+Add the Channels fields to your network config:
 
 ```json
 {
@@ -235,6 +305,7 @@ Add `channel_service_api_url` and `channel_service_api_key` to your network conf
         "assets": ["CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA"],
         "channel_service_api_url": "https://channels.openzeppelin.com/testnet",
         "channel_service_api_key": "YOUR_CHANNELS_API_KEY",
+        "channel_service_fund_relayer_id": "YOUR_FUND_RELAYER_ID",
         "channel_service_fund_relayer_address": "G..."
       }
     ]
@@ -245,10 +316,13 @@ Add `channel_service_api_url` and `channel_service_api_key` to your network conf
 **Key fields:**
 
 - **`channel_service_api_url`**: The URL of the Channels service. Use `https://channels.openzeppelin.com/testnet` for testnet or the appropriate endpoint for your environment.
-- **`channel_service_api_key`**: Your API key for the Channels service.
-- **`channel_service_fund_relayer_address`** (optional): The on-chain signer address of the Channels service fund relayer. When set, the `/supported` endpoint reports this address instead of the RPC relayer address, and verify security checks also protect this address from being used as a transfer source.
+- **`channel_service_api_key`**: Your API key for the Channels service. For the hosted OpenZeppelin service, generate one at https://channels.openzeppelin.com/testnet/gen (testnet) or https://channels.openzeppelin.com/gen (mainnet).
+- **`channel_service_fund_relayer_id`** (optional): The ID of an alternative Channels fund relayer that fee-bumps your settlements. The ID must be allowlisted in the Channels service (`ALLOWED_FUND_RELAYER_IDS`), otherwise requests are rejected. When omitted, Channels uses its primary fund relayer.
+- **`channel_service_fund_relayer_address`** (optional): The on-chain address of that fund relayer. When set, the `/supported` endpoint reports this address instead of the `relayer_id` address, and verify security checks also protect this address from being used as a transfer source.
 
-When these fields are present, the plugin routes settlement through the Channels service instead of submitting transactions directly via the relayer. The plugin sends the Soroban function XDR and authorization entries to the Channels service, which handles transaction building, simulation, and submission using its pool of channel accounts.
+> **Important:** `channel_service_fund_relayer_id` and `channel_service_fund_relayer_address` must refer to the same account. The ID decides which account actually pays the fee; the address is what `/supported` advertises and what verify protects. The plugin does not check that they match. After a test settlement, confirm on chain that the fee bump's fee account equals the advertised address (the smoke test's `--verify-fee-bump-source` flag does this).
+
+When `channel_service_api_url` and `channel_service_api_key` are present, the plugin routes settlement through the Channels service instead of submitting transactions directly via the relayer. The plugin sends the Soroban function XDR and authorization entries to the Channels service, which handles transaction building, simulation, and submission using its pool of channel accounts. The `relayer_id` relayer is still used for verification but no longer pays settlement fees.
 
 ## Adding Trustlines for Token Support
 
@@ -268,6 +342,8 @@ POST /api/v1/relayers/{relayer-id}/transactions
   }
 }
 ```
+
+Alternatively, the Relayer SDK has a script that builds and submits this transaction: [`createTrustline.ts`](https://github.com/OpenZeppelin/openzeppelin-relayer-sdk/blob/main/examples/relayers/stellar/src/sponsored/createTrustline.ts). Set `USER_ACCOUNT` to the relayer's own address, since the relayer is the only signer.
 
 ## Development & testing
 
