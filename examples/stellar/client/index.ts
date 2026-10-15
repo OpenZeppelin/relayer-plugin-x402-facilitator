@@ -1,9 +1,8 @@
 import { config } from "dotenv";
 import { wrapFetchWithPayment, decodePaymentResponseHeader } from "@x402/fetch";
 import { x402Client } from "@x402/core/client";
-import { Transaction } from "@stellar/stellar-sdk";
 import { ExactStellarScheme } from "@x402/stellar/exact/client";
-import { createEd25519Signer, getNetworkPassphrase } from "@x402/stellar";
+import { createEd25519Signer } from "@x402/stellar";
 
 config();
 
@@ -33,7 +32,7 @@ const payFetch = wrapFetchWithPayment(fetch, client);
 
 const endpoints = [
   { path: "/weather", label: "Weather ($0.001)" },
-  { path: "/premium", label: "Premium ($0.01)" },
+  { path: "/premium", label: "Premium ($0.001)" },
 ];
 
 // --- Run concurrent requests ---
@@ -71,8 +70,12 @@ async function main() {
     const label = requests[i].label;
 
     if (result.status === "fulfilled") {
-      fulfilled++;
       const { status, response, elapsed } = result.value;
+      if (status === 200) {
+        fulfilled++;
+      } else {
+        rejected++;
+      }
       const paymentHeader = response.headers.get("PAYMENT-RESPONSE");
       if (paymentHeader) {
         const settleResponse = decodePaymentResponseHeader(paymentHeader);
