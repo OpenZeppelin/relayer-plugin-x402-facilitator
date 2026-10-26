@@ -34,6 +34,7 @@ import {
 } from "../types";
 import {
   DEFAULT_TIMEOUT_SECONDS,
+  MAX_MESSAGE_LENGTH,
   getNetworkPassphrase,
   getSignedAddressesFromAuthEntries,
   isValidStellarNetwork,
@@ -79,13 +80,22 @@ type ErrorReason =
   | "unsupported_asset";
 
 /**
- * Creates an invalid verification response
+ * Creates an invalid verification response. The message is returned to the
+ * caller, so it must not carry configuration or internal error details.
  */
 function invalidResponse(
   reason: ErrorReason | string,
   payer?: string,
+  message?: string,
 ): VerifyResponse {
-  return { isValid: false, invalidReason: reason, payer };
+  return {
+    isValid: false,
+    invalidReason: reason,
+    ...(message
+      ? { invalidMessage: message.slice(0, MAX_MESSAGE_LENGTH) }
+      : {}),
+    payer,
+  };
 }
 
 /**
@@ -171,7 +181,11 @@ export async function verify(
       );
     } catch (error) {
       console.error("Error parsing transaction:", error);
-      return invalidResponse("invalid_exact_stellar_payload_malformed");
+      return invalidResponse(
+        "invalid_exact_stellar_payload_malformed",
+        undefined,
+        `Could not parse transaction: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
 
     // 3. Validate transaction structure - must have exactly one operation
@@ -180,7 +194,11 @@ export async function verify(
         "Invalid transaction operations length:",
         transaction.operations.length,
       );
-      return invalidResponse("invalid_exact_stellar_payload_wrong_operation");
+      return invalidResponse(
+        "invalid_exact_stellar_payload_wrong_operation",
+        undefined,
+        `Expected 1 operation, got ${transaction.operations.length}`,
+      );
     }
 
     const operation = transaction.operations[0];
@@ -325,6 +343,7 @@ export async function verify(
       return invalidResponse(
         "invalid_exact_stellar_payload_missing_payer_auth",
         fromAddress,
+        `Payer ${fromAddress} has not signed its auth entry`,
       );
     }
 
@@ -336,6 +355,7 @@ export async function verify(
       return invalidResponse(
         "invalid_exact_stellar_payload_unsigned_auth_entry",
         fromAddress,
+        `Unsigned auth entries for: ${unsignedAddresses.join(", ")}`,
       );
     }
 
@@ -390,6 +410,7 @@ export async function verify(
       return invalidResponse(
         "invalid_exact_stellar_payload_simulation_failed",
         fromAddress,
+        `Simulation failed: ${simulateResponse.error}`,
       );
     }
 
@@ -459,6 +480,7 @@ export async function verify(
         eventValidation.errorCode ||
           "invalid_exact_stellar_payload_unexpected_balance_changes",
         fromAddress,
+        eventValidation.error,
       );
     }
 

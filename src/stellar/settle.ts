@@ -34,6 +34,7 @@ import type {
 import { ScVal, StellarTransactionResponse } from "@openzeppelin/relayer-sdk";
 import {
   DEFAULT_TIMEOUT_SECONDS,
+  MAX_MESSAGE_LENGTH,
   getNetworkPassphrase,
   mapRelayerNetworkToStellar,
   networksMatch,
@@ -228,6 +229,18 @@ function retryDelayMs(error: unknown, minMs: number): number {
   const retryAfterMs =
     error instanceof ChannelServiceError ? error.retryAfterMs : null;
   return Math.max(minMs, retryAfterMs ?? 0);
+}
+
+/**
+ * Describes a failed channel service response for SettleResponse.errorMessage.
+ */
+function channelFailureMessage(
+  subject: string,
+  response: ChannelServiceResponse,
+): string {
+  const status = response.data?.status;
+  const error = response.data?.error;
+  return `Channel service ${subject}${status ? ` (status ${status})` : ""}${error ? `: ${error}` : ""}`;
 }
 
 /**
@@ -521,6 +534,7 @@ async function settleViaChannelService(
         network,
         payer,
         submitResponse.data?.hash ?? undefined,
+        channelFailureMessage("submission failed", submitResponse),
       );
     }
 
@@ -550,6 +564,7 @@ async function settleViaChannelService(
         network,
         payer,
         submitResponse.data?.hash ?? undefined,
+        "Channel service returned no confirmed hash or transactionId",
       );
     }
 
@@ -568,6 +583,7 @@ async function settleViaChannelService(
         network,
         payer,
         submitResponse.data?.hash ?? undefined,
+        `Transaction ${transactionId} submitted, but no time was left to poll its status`,
       );
     }
     const result = await pollTransactionStatus(
@@ -602,6 +618,12 @@ async function settleViaChannelService(
         network,
         payer,
         lastHash,
+        pollStatus === "confirmed"
+          ? `Channel service transaction ${transactionId} confirmed without a hash`
+          : channelFailureMessage(
+              `transaction ${transactionId} not final`,
+              result,
+            ),
       );
     } else {
       console.error("Channel service transaction failed:", result);
@@ -610,6 +632,7 @@ async function settleViaChannelService(
         network,
         payer,
         lastHash,
+        channelFailureMessage(`transaction ${transactionId}`, result),
       );
     }
   } catch (channelError) {
@@ -618,7 +641,9 @@ async function settleViaChannelService(
         ? channelError.message
         : String(channelError);
     console.error("Channel service error:", errorMsg);
-    // The submit's outcome is unknown, so the transaction may still land
+    // The submit's outcome is unknown, so the transaction may still land.
+    // Only the channel service's own status and code, or the deadline, are
+    // returned; other errors may carry internal details and stay in the log.
     return errorResponse(
       isChannelOutcomeUnknown(channelError)
         ? "settle_exact_stellar_transaction_not_final"
@@ -626,6 +651,12 @@ async function settleViaChannelService(
       network,
       payer,
       submitHash,
+      channelError instanceof ChannelServiceError ||
+        channelError instanceof DeadlineError
+        ? channelError.message
+        : channelError instanceof SendOutcomeUnknownError
+          ? "Channel service submit outcome unknown: the transaction may still land"
+          : "Channel service request failed",
     );
   }
 }
@@ -784,6 +815,8 @@ function settlementResponse(
       "settle_exact_stellar_transaction_not_final",
       network,
       payer,
+      undefined,
+      "No transaction status received before the deadline",
     );
   }
 
@@ -805,15 +838,20 @@ function settlementResponse(
       network,
       payer,
       txHash ?? undefined,
+      tx.status === "confirmed"
+        ? "Transaction confirmed without a hash"
+        : `Transaction still ${tx.status} at the deadline`,
     );
   }
 
   console.error(`Transaction failed with status: ${tx.status}`, tx);
+  const statusReason = (tx as StellarTransactionResponse).status_reason;
   return errorResponse(
     "settle_exact_stellar_transaction_failed",
     network,
     payer,
     txHash,
+    `Transaction ${tx.status}${statusReason ? `: ${statusReason}` : ""}`,
   );
 }
 
@@ -931,6 +969,8 @@ async function settleViaRelayer(
       "settle_exact_stellar_transaction_not_final",
       network,
       payer,
+      undefined,
+      "No reply to the transaction send before the deadline: the transaction may still land",
     );
   }
 
@@ -961,17 +1001,20 @@ function successResponse(
 }
 
 /**
- * Creates a failed settlement response
+ * Creates a failed settlement response. The message is returned to the
+ * caller, so it must not carry configuration or internal error details.
  */
 function errorResponse(
   reason: ErrorReason | string,
   network: string,
   payer?: string,
   txHash?: string,
+  message?: string,
 ): SettleResponse {
   return {
     success: false,
     errorReason: reason,
+    ...(message ? { errorMessage: message.slice(0, MAX_MESSAGE_LENGTH) } : {}),
     transaction: txHash ?? "",
     network,
     payer,
@@ -1029,6 +1072,8 @@ export async function settle(
         verifyResult.invalidReason!,
         network,
         verifyResult.payer,
+        undefined,
+        verifyResult.invalidMessage,
       );
     }
 

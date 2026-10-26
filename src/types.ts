@@ -91,12 +91,14 @@ export type VerifyRequest = {
 export type VerifyResponse = {
   isValid: boolean;
   invalidReason?: string;
+  invalidMessage?: string; // human-readable detail for invalidReason
   payer?: string; // account address
 };
 
 export type SettleResponse = {
   success: boolean;
   errorReason?: string;
+  errorMessage?: string; // human-readable detail for errorReason
   payer?: string; // account address
   transaction: string; // tx id/address
   network: Network;
