@@ -4,8 +4,13 @@
  * Settlement flow:
  * 1. Verify payment is valid
  * 2. Extract operation details and signed auth entries from user transaction
- * 3. Submit via relayer using operations with signed auth entries
+ * 3. Submit via relayer using operations with signed auth entries and an
+ *    idempotency key derived from them
  * 4. Wait for confirmation
+ *
+ * A second settle of a payment that already settled fails verification on
+ * the used nonce. Resource servers rely on that to reject replays, so this
+ * plugin never reports an earlier settlement's success to a later call.
  *
  * The client signs only the auth entries (not the whole transaction envelope).
  * The relayer builds a fresh transaction with:
@@ -13,6 +18,7 @@
  * - User's signed auth entries (proves user authorization)
  * - Same contract invocation details
  */
+import { createHash, randomUUID } from "node:crypto";
 import { Address, Operation, Transaction, xdr } from "@stellar/stellar-sdk";
 import {
   ExactStellarPayloadV2,
@@ -20,7 +26,11 @@ import {
   SettleRequest,
   SettleResponse,
 } from "../types";
-import type { PluginAPI, Relayer } from "@openzeppelin/relayer-sdk";
+import type {
+  PluginAPI,
+  Relayer,
+  TransactionResponse,
+} from "@openzeppelin/relayer-sdk";
 import { ScVal, StellarTransactionResponse } from "@openzeppelin/relayer-sdk";
 import {
   DEFAULT_TIMEOUT_SECONDS,
@@ -31,6 +41,52 @@ import {
 } from "./utils";
 
 import { verify } from "./verify";
+
+/**
+ * Options for `Relayer.sendTransaction`. Relayer 1.9.0+ reads
+ * `idempotencyKey`; older Relayers drop it, so a resend there can create a
+ * second transaction (see sendWithIdempotencyKey).
+ * TODO: import `SendTransactionOptions` from `@openzeppelin/relayer-sdk`
+ * once a release that exports it is published.
+ */
+type SendTransactionOptions = {
+  idempotencyKey?: string;
+};
+
+type IdempotentRelayer = Omit<Relayer, "sendTransaction"> & {
+  sendTransaction: (
+    payload: Parameters<Relayer["sendTransaction"]>[0],
+    options?: SendTransactionOptions,
+  ) => ReturnType<Relayer["sendTransaction"]>;
+};
+
+/**
+ * Derives the idempotency key for one settle call.
+ *
+ * The payer's signed auth entry carries a unique nonce, and the invocation
+ * fixes the asset, payer, recipient and amount, so together with the network
+ * they identify one transfer. The attempt id makes the key unique to a single
+ * settle call: a resend within the call after a lost reply gets the
+ * transaction already created, while a second settle call for the same
+ * payment (a replay, concurrent or later) gets its own transaction, which
+ * fails on the used nonce.
+ */
+export function settlementIdempotencyKey(
+  network: string,
+  funcXdr: string,
+  authEntriesXdr: string[],
+  attemptId: string,
+): string {
+  const hash = createHash("sha256");
+  hash.update(network);
+  hash.update("\n");
+  hash.update(funcXdr);
+  for (const entry of authEntriesXdr) {
+    hash.update("\n");
+    hash.update(entry);
+  }
+  return `x402-stellar-settle:${hash.digest("hex")}:${attemptId}`;
+}
 
 type ErrorReason =
   | "invalid_exact_stellar_payload_malformed"
@@ -64,6 +120,35 @@ const CHANNEL_REQUEST_TIMEOUT_MS = 10_000;
 const BUFFER_MS = 2_000;
 const MAX_SUBMIT_RETRIES = 3;
 const INITIAL_BACKOFF_MS = 1000;
+const IN_PROGRESS_BACKOFF_MS = 500;
+const RELAYER_POLL_INTERVAL_MS = 500;
+/** Relayer error when another request holds the key but has no transaction yet. */
+const IDEMPOTENCY_IN_PROGRESS_MESSAGE =
+  "A request with this Idempotency-Key is already in progress";
+/**
+ * Plugin runtime errors where the Relayer's reply did not arrive: request
+ * timeout, socket closed by the server, or socket lost before sending. Only
+ * the pool executor reconnects, so on the direct executor a resend after a
+ * closed socket fails too.
+ */
+const SOCKET_ERROR_PREFIXES = [
+  "Socket request ",
+  "Socket closed",
+  "Socket became unavailable",
+];
+/** Plugin runtime error code when the socket to the Relayer closed. */
+const SOCKET_CLOSED_CODE = "ESOCKETCLOSED";
+/** `mined` is not final: the transaction still awaits confirmation. */
+const FINAL_TRANSACTION_STATUSES = new Set([
+  "confirmed",
+  "canceled",
+  "expired",
+  "failed",
+]);
+
+type RelayerRequest = Parameters<Relayer["sendTransaction"]>[0];
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Custom error for channel service failures that preserves the HTTP status, parsed response body,
@@ -115,7 +200,7 @@ async function callChannelService(
   apiKey: string,
   params: Record<string, unknown>,
   deadlineMs: number,
-  options: { requestTimeoutMs?: number } = {},
+  options: { requestTimeoutMs?: number; headers?: Record<string, string> } = {},
 ): Promise<ChannelServiceResponse> {
   // Abort at the request timeout or the settlement deadline, whichever is first
   const timeoutMs = Math.max(
@@ -136,6 +221,7 @@ async function callChannelService(
       apiUrl,
       apiKey,
       params,
+      options.headers ?? {},
       controller.signal,
     );
   } finally {
@@ -147,11 +233,13 @@ async function sendChannelServiceRequest(
   apiUrl: string,
   apiKey: string,
   params: Record<string, unknown>,
+  headers: Record<string, string>,
   signal: AbortSignal,
 ): Promise<ChannelServiceResponse> {
   const response = await fetch(apiUrl, {
     method: "POST",
     headers: {
+      ...headers,
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
     },
@@ -267,10 +355,17 @@ async function pollTransactionStatus(
 /**
  * Settles transaction via channel service.
  * Extracts host function and auth entries as XDR and submits to channel service.
+ *
+ * The submit carries the settle call's `Idempotency-Key` header, the same
+ * key the Relayer path sends. Channel services that support it return the
+ * transaction an earlier submit with the key created; older ones ignore it.
+ * A submit whose reply is lost is not resent, since an older service would
+ * create a second transaction.
  */
 async function settleViaChannelService(
   func: xdr.HostFunctionInvokeContract,
   authEntriesXdr: string[],
+  idempotencyKey: string,
   networkConfig: NetworkConfig,
   network: string,
   deadlineMs: number,
@@ -306,6 +401,7 @@ async function settleViaChannelService(
             ...(fundRelayerId ? { fundRelayerId } : {}),
           },
           deadlineMs,
+          { headers: { "Idempotency-Key": idempotencyKey } },
         );
         break; // Success – exit retry loop
       } catch (error) {
@@ -419,17 +515,199 @@ async function settleViaChannelService(
 }
 
 /**
- * Settles transaction via relayer API.
- * Converts operation details to JSON format and submits via relayer.
+ * Decodes the contract invocation and signed auth entries from the payload.
+ * Returns null when the payload is not a single invoke contract operation.
  */
-async function settleViaRelayer(
+function extractInvocation(params: SettleRequest): {
+  func: xdr.HostFunctionInvokeContract;
+  funcXdr: string;
+  authEntriesXdr: string[];
+} | null {
+  try {
+    const stellarPayload = params.paymentPayload
+      .payload as ExactStellarPayloadV2;
+    const transaction = new Transaction(
+      stellarPayload.transaction,
+      getNetworkPassphrase(params.paymentRequirements.network),
+    );
+    const operation = transaction.operations[0] as Operation.InvokeHostFunction;
+    const func = operation?.func;
+    if (!func || func.type !== "hostFunctionTypeInvokeContract") {
+      return null;
+    }
+    const authEntriesXdr = (operation.auth || []).map((entry) =>
+      entry.toXdr("base64"),
+    );
+    return { func, funcXdr: func.toXdr("base64"), authEntriesXdr };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolves with the promise's value, or rejects once timeoutMs passes.
+ * The promise keeps running; a late rejection is ignored.
+ */
+function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+  });
+  promise.catch(() => undefined);
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Tells whether a sendTransaction error leaves the outcome unknown and can
+ * be retried with the same key: another request holds the key but has no
+ * transaction yet, or the Relayer's reply was lost. Errors the Relayer
+ * returned for this request are final.
+ */
+function isRetryableSendError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes(IDEMPOTENCY_IN_PROGRESS_MESSAGE) ||
+    SOCKET_ERROR_PREFIXES.some((prefix) => message.startsWith(prefix)) ||
+    (error as { code?: unknown })?.code === SOCKET_CLOSED_CODE
+  );
+}
+
+/**
+ * Submits the transaction with an idempotency key, bounding each send by
+ * the settlement deadline. When the outcome is unknown (see
+ * isRetryableSendError), resends with the same key within the deadline: the
+ * Relayer returns the transaction it holds for the key, or creates it if the
+ * earlier send never arrived. Callers must have verified the payment.
+ *
+ * Requires Relayer 1.9.0+: older Relayers drop the key, so a resend after a
+ * lost reply creates a second transaction, which then fails on the used
+ * nonce.
+ */
+async function sendWithIdempotencyKey(
+  relayer: Relayer,
+  payload: RelayerRequest,
+  idempotencyKey: string,
+  deadlineMs: number,
+): ReturnType<Relayer["sendTransaction"]> {
+  for (let attempt = 0; ; attempt++) {
+    const remainingMs = deadlineMs - Date.now();
+    if (remainingMs <= 0) {
+      throw new Error("No time remaining to send the transaction");
+    }
+    try {
+      return await withTimeout(
+        (relayer as IdempotentRelayer).sendTransaction(payload, {
+          idempotencyKey,
+        }),
+        remainingMs,
+        "Send to Relayer",
+      );
+    } catch (error) {
+      if (!isRetryableSendError(error)) {
+        throw error;
+      }
+
+      const backoffMs = IN_PROGRESS_BACKOFF_MS * Math.pow(2, attempt);
+      const remaining = deadlineMs - Date.now();
+      if (attempt >= MAX_SUBMIT_RETRIES || remaining <= backoffMs) {
+        throw error;
+      }
+
+      console.log(
+        `Settlement outcome unknown (${error instanceof Error ? error.message : String(error)}), sending again (retry ${attempt + 1}/${MAX_SUBMIT_RETRIES}) after ${backoffMs}ms`,
+      );
+      await sleep(backoffMs);
+    }
+  }
+}
+
+/**
+ * Maps a Relayer transaction to the settle response.
+ */
+function settlementResponse(
+  tx: TransactionResponse | null,
+  network: string,
+  payer?: string,
+): SettleResponse {
+  if (!tx) {
+    console.error("No transaction status received before the deadline");
+    return errorResponse(
+      "settle_exact_stellar_transaction_failed",
+      network,
+      payer,
+    );
+  }
+
+  const txHash = (tx as StellarTransactionResponse).hash;
+
+  if (tx.status === "confirmed") {
+    console.log("Transaction confirmed:", txHash);
+    return successResponse(txHash!, network, payer);
+  }
+
+  console.error(`Transaction failed with status: ${tx.status}`, tx);
+  return errorResponse(
+    "settle_exact_stellar_transaction_failed",
+    network,
+    payer,
+    txHash,
+  );
+}
+
+/**
+ * Polls the Relayer until the transaction reaches a final status or the
+ * deadline passes. Each status request is bounded by the remaining time,
+ * and a failed request counts as a missed poll, not a failed settlement.
+ * Returns the last status received, or null if none arrived.
+ */
+async function waitForRelayerTransaction(
+  relayer: Relayer,
+  transactionId: string,
+  deadlineMs: number,
+): Promise<TransactionResponse | null> {
+  let tx: TransactionResponse | null = null;
+
+  for (;;) {
+    const remainingMs = deadlineMs - Date.now();
+    if (remainingMs <= 0) return tx;
+
+    try {
+      tx = await withTimeout(
+        relayer.getTransaction({ transactionId }),
+        remainingMs,
+        `Status request for ${transactionId}`,
+      );
+      if (FINAL_TRANSACTION_STATUSES.has(tx.status)) return tx;
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `Relayer status request failed for ${transactionId}, retrying:`,
+        errorMsg,
+      );
+    }
+
+    const delayMs = Math.min(RELAYER_POLL_INTERVAL_MS, deadlineMs - Date.now());
+    if (delayMs <= 0) return tx;
+    await sleep(delayMs);
+  }
+}
+
+/**
+ * Converts the contract invocation and signed auth entries to the Relayer's
+ * JSON transaction request.
+ */
+function buildRelayerRequest(
   func: xdr.HostFunctionInvokeContract,
   authEntriesXdr: string[],
-  relayer: Relayer,
   network: string,
-  deadlineMs: number,
-  payer?: string,
-): Promise<SettleResponse> {
+): RelayerRequest {
   const invokeContractArgs = func.invokeContract;
 
   // Convert contract address from ScAddress to string
@@ -454,7 +732,7 @@ async function settleViaRelayer(
     authEntriesCount: authEntriesXdr.length,
   });
 
-  const txResult = await relayer.sendTransaction({
+  return {
     network,
     operations: [
       {
@@ -468,32 +746,35 @@ async function settleViaRelayer(
         },
       },
     ],
-  });
+  };
+}
+
+/**
+ * Settles transaction via relayer API.
+ */
+async function settleViaRelayer(
+  request: RelayerRequest,
+  idempotencyKey: string,
+  relayer: Relayer,
+  network: string,
+  deadlineMs: number,
+  payer?: string,
+): Promise<SettleResponse> {
+  const txResult = await sendWithIdempotencyKey(
+    relayer,
+    request,
+    idempotencyKey,
+    deadlineMs,
+  );
 
   // Wait for transaction confirmation using remaining time budget
-  const remainingMs = deadlineMs - Date.now();
-  const confirmedTx = await txResult.wait({
-    interval: 500,
-    timeout: Math.max(remainingMs, 0),
-  });
+  const confirmedTx = await waitForRelayerTransaction(
+    relayer,
+    txResult.id,
+    deadlineMs,
+  );
 
-  const txHash = (confirmedTx as StellarTransactionResponse).hash;
-
-  if (confirmedTx.status === "confirmed") {
-    console.log("Transaction confirmed:", txHash);
-    return successResponse(txHash!, network, payer);
-  } else {
-    console.error(
-      `Transaction failed with status: ${confirmedTx.status}`,
-      confirmedTx,
-    );
-    return errorResponse(
-      "settle_exact_stellar_transaction_failed",
-      network,
-      payer,
-      txHash,
-    );
-  }
+  return settlementResponse(confirmedTx, network, payer);
 }
 
 /**
@@ -586,31 +867,25 @@ export async function settle(
 
     payer = verifyResult.payer;
 
-    // 2. Extract and parse the user-signed transaction XDR
-    const stellarPayload = paymentPayload.payload as ExactStellarPayloadV2;
-    const networkPassphrase = getNetworkPassphrase(paymentRequirements.network);
-    const transaction = new Transaction(
-      stellarPayload.transaction,
-      networkPassphrase,
-    );
-
-    // 3. Extract the operation details and signed auth entries from the transaction
-    const operation = transaction.operations[0] as Operation.InvokeHostFunction;
-    const func = operation.func;
-
-    if (!func || func.type !== "hostFunctionTypeInvokeContract") {
+    // 2. Extract the operation details and signed auth entries (contain the
+    // user's signatures) from the user-signed transaction
+    const invocation = extractInvocation(params);
+    if (!invocation) {
       return errorResponse(
         "invalid_exact_stellar_payload_wrong_operation",
         network,
         payer,
       );
     }
+    const { func, funcXdr, authEntriesXdr } = invocation;
+    const idempotencyKey = settlementIdempotencyKey(
+      network,
+      funcXdr,
+      authEntriesXdr,
+      randomUUID(),
+    );
 
-    // Extract signed auth entries (contain the user's signatures)
-    const authEntries = operation.auth || [];
-    const authEntriesXdr = authEntries.map((entry) => entry.toXdr("base64"));
-
-    // 4. Submit transaction via channel service or relayer
+    // 3. Submit transaction via channel service or relayer
     const useChannelService =
       networkConfig.channel_service_api_url &&
       networkConfig.channel_service_api_key;
@@ -619,6 +894,7 @@ export async function settle(
       return await settleViaChannelService(
         func,
         authEntriesXdr,
+        idempotencyKey,
         networkConfig,
         network,
         deadlineMs,
@@ -626,8 +902,8 @@ export async function settle(
       );
     } else {
       return await settleViaRelayer(
-        func,
-        authEntriesXdr,
+        buildRelayerRequest(func, authEntriesXdr, network),
+        idempotencyKey,
         relayer,
         network,
         deadlineMs,

@@ -10,7 +10,7 @@ import {
   buildPaymentRequirementsV2,
 } from "./helpers/payload";
 
-import { settle } from "../src/stellar/settle";
+import { settle, settlementIdempotencyKey } from "../src/stellar/settle";
 
 vi.mock("@stellar/stellar-sdk", () => {
   class Transaction {
@@ -71,18 +71,16 @@ const baseNetworkConfig = {
   assets: ["ASSET_CONTRACT"],
 };
 
-const makeRelayer = () => {
-  const wait = vi
+const makeRelayer = () => ({
+  getRelayer: vi
     .fn()
-    .mockResolvedValue({ status: "confirmed", hash: "HASH_RELAYER" });
-  return {
-    getRelayer: vi
-      .fn()
-      .mockResolvedValue({ network: "testnet", address: "RELAYER_ADDR" }),
-    rpc: vi.fn().mockResolvedValue({ result: {} }),
-    sendTransaction: vi.fn().mockResolvedValue({ wait }),
-  };
-};
+    .mockResolvedValue({ network: "testnet", address: "RELAYER_ADDR" }),
+  rpc: vi.fn().mockResolvedValue({ result: {} }),
+  sendTransaction: vi.fn().mockResolvedValue({ id: "tx-new" }),
+  getTransaction: vi
+    .fn()
+    .mockResolvedValue({ status: "confirmed", hash: "HASH_RELAYER" }),
+});
 
 const makeApi = (relayer = makeRelayer()) =>
   ({
@@ -144,6 +142,11 @@ describe("stellar settle", () => {
       expect.objectContaining({
         operations: expect.any(Array),
       }),
+      {
+        idempotencyKey: expect.stringMatching(
+          /^x402-stellar-settle:[0-9a-f]{64}:[0-9a-f-]{36}$/,
+        ),
+      },
     );
     expect(result.success).toBe(true);
     expect(result.transaction).toBe("HASH_RELAYER");
@@ -204,6 +207,15 @@ describe("stellar settle", () => {
     // First call should include skipWait
     const firstCallBody = JSON.parse((fetchMock.mock.calls[0][1] as any).body);
     expect(firstCallBody.params.skipWait).toBe(true);
+    // Submit carries the idempotency key; the status poll does not
+    const firstCallHeaders = (fetchMock.mock.calls[0][1] as any).headers;
+    expect(firstCallHeaders["Idempotency-Key"]).toMatch(
+      /^x402-stellar-settle:[0-9a-f]{64}:[0-9a-f-]{36}$/,
+    );
+    expect(firstCallHeaders.Authorization).toBe("Bearer channel-key");
+    expect(
+      (fetchMock.mock.calls[1][1] as any).headers["Idempotency-Key"],
+    ).toBeUndefined();
     // Second call should be get-transaction with fundRelayerId
     const secondCallBody = JSON.parse((fetchMock.mock.calls[1][1] as any).body);
     expect(secondCallBody.params.getTransaction.transactionId).toBe("TX_ID_1");
@@ -578,6 +590,353 @@ describe("stellar settle", () => {
   });
 });
 
+describe("settlementIdempotencyKey", () => {
+  test("is stable for the same payment and attempt", () => {
+    expect(settlementIdempotencyKey("testnet", "FUNC", ["AUTH_A"], "a1")).toBe(
+      settlementIdempotencyKey("testnet", "FUNC", ["AUTH_A"], "a1"),
+    );
+  });
+
+  test("differs by network, invocation, auth entries and attempt", () => {
+    const key = settlementIdempotencyKey("testnet", "FUNC", ["AUTH_A"], "a1");
+    for (const other of [
+      settlementIdempotencyKey("mainnet", "FUNC", ["AUTH_A"], "a1"),
+      settlementIdempotencyKey("testnet", "FUNC_900", ["AUTH_A"], "a1"),
+      settlementIdempotencyKey("testnet", "FUNC", ["AUTH_B"], "a1"),
+      settlementIdempotencyKey("testnet", "FUNC", ["AUTH_A", "AUTH_B"], "a1"),
+      settlementIdempotencyKey("testnet", "FUNC", ["AUTH_A"], "a2"),
+    ]) {
+      expect(other).not.toBe(key);
+    }
+  });
+
+  test("fits the Relayer key length limit", () => {
+    const key = settlementIdempotencyKey(
+      "testnet",
+      "FUNC",
+      ["AUTH_A"],
+      "6f1c2a9e-3b6d-4f2e-9c1a-0d7e5b2f8a41",
+    );
+    expect(key.length).toBeLessThanOrEqual(255);
+  });
+});
+
+describe("idempotent settlement", () => {
+  const IN_PROGRESS_ERROR =
+    "Relayer error: A request with this Idempotency-Key is already in progress";
+
+  const makeParams = (overrides: Record<string, unknown> = {}) => ({
+    paymentPayload: buildPaymentPayloadV2(buildInvokeTxBase64()),
+    paymentRequirements: buildPaymentRequirementsV2(overrides),
+  });
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(utils, "scValToJsonArg").mockImplementation(() => ({
+      address: "MOCK_ADDRESS",
+    }));
+    vi.spyOn(verifyModule, "verify").mockResolvedValue({
+      isValid: true,
+      payer: "G-PAYER",
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  test("rejects a second settle of a payment that already settled", async () => {
+    const relayer = makeRelayer();
+    const first = await settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+    expect(first.success).toBe(true);
+
+    // The used nonce fails verification; nothing is recovered or resent
+    vi.mocked(verifyModule.verify).mockResolvedValue({
+      isValid: false,
+      invalidReason: "invalid_exact_stellar_payload_simulation_failed",
+      payer: "G-PAYER",
+    });
+    relayer.sendTransaction.mockClear();
+    relayer.getTransaction.mockClear();
+
+    const replay = await settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+
+    expect(relayer.sendTransaction).not.toHaveBeenCalled();
+    expect(relayer.getTransaction).not.toHaveBeenCalled();
+    expect(replay.success).toBe(false);
+    expect(replay.errorReason).toBe(
+      "invalid_exact_stellar_payload_simulation_failed",
+    );
+  });
+
+  test("gives concurrent settles of the same payment separate keys", async () => {
+    const relayer = makeRelayer();
+
+    await Promise.all([
+      settle(makeParams() as any, makeApi(relayer), baseNetworkConfig),
+      settle(makeParams() as any, makeApi(relayer), baseNetworkConfig),
+    ]);
+
+    const [[, first], [, second]] = relayer.sendTransaction.mock.calls;
+    expect(first.idempotencyKey).not.toBe(second.idempotencyKey);
+  });
+
+  test.each([
+    [
+      "timed out",
+      new Error("Socket request 'sendTransaction' timed out after 30000ms"),
+    ],
+    [
+      "closed",
+      Object.assign(
+        new Error("Socket closed by server (connection lifetime exceeded)"),
+        { code: "ESOCKETCLOSED" },
+      ),
+    ],
+    ["closed by pool executor", new Error("Socket closed by server")],
+  ])(
+    "resends with the same key when the Relayer reply is lost (%s)",
+    async (_name, socketError) => {
+      vi.useFakeTimers();
+      const relayer = makeRelayer();
+      relayer.sendTransaction.mockRejectedValueOnce(socketError);
+
+      const promise = settle(
+        makeParams() as any,
+        makeApi(relayer),
+        baseNetworkConfig,
+      );
+      await vi.advanceTimersByTimeAsync(500);
+      const result = await promise;
+
+      expect(relayer.sendTransaction).toHaveBeenCalledTimes(2);
+      const [[firstPayload, firstOptions], [secondPayload, secondOptions]] =
+        relayer.sendTransaction.mock.calls;
+      expect(secondPayload).toEqual(firstPayload);
+      expect(secondOptions.idempotencyKey).toBe(firstOptions.idempotencyKey);
+      expect(result.success).toBe(true);
+      expect(result.transaction).toBe("HASH_RELAYER");
+    },
+  );
+
+  test("returns by the deadline when a send never answers", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    relayer.sendTransaction.mockImplementation(() => new Promise(() => {}));
+
+    let settled = false;
+    const promise = settle(
+      makeParams({ maxTimeoutSeconds: 2 }) as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    ).finally(() => {
+      settled = true;
+    });
+    // 2s timeout leaves a 1s deadline
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(settled).toBe(true);
+    const result = await promise;
+    expect(relayer.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe("unexpected_settle_error");
+  });
+
+  test("does not resend after a lost reply once the deadline is near", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    // The reply is lost just before the 1s deadline
+    relayer.sendTransaction.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) =>
+          setTimeout(() => reject(new Error("Socket closed by server")), 800),
+        ),
+    );
+
+    const promise = settle(
+      makeParams({ maxTimeoutSeconds: 2 }) as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await promise;
+
+    expect(relayer.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+  });
+
+  test("retries with the same key while another settle is in progress", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    relayer.sendTransaction
+      .mockRejectedValueOnce(new Error(IN_PROGRESS_ERROR))
+      .mockResolvedValueOnce({ id: "tx-new" });
+
+    const promise = settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    const result = await promise;
+
+    expect(relayer.sendTransaction).toHaveBeenCalledTimes(2);
+    const [[, first], [, second]] = relayer.sendTransaction.mock.calls;
+    expect(second.idempotencyKey).toBe(first.idempotencyKey);
+    expect(result.success).toBe(true);
+    expect(result.transaction).toBe("HASH_RELAYER");
+  });
+
+  test("stops retrying an in-progress settle when the time budget runs out", async () => {
+    const relayer = makeRelayer();
+    relayer.sendTransaction.mockRejectedValue(new Error(IN_PROGRESS_ERROR));
+
+    const result = await settle(
+      // 1s timeout leaves 500ms of budget, not enough for a 500ms backoff
+      makeParams({ maxTimeoutSeconds: 1 }) as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+
+    expect(relayer.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe("unexpected_settle_error");
+  });
+
+  test("does not retry other Relayer errors", async () => {
+    const relayer = makeRelayer();
+    relayer.sendTransaction.mockRejectedValue(
+      new Error(
+        "Relayer error: Idempotency-Key reused with a different request payload",
+      ),
+    );
+
+    const result = await settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+
+    expect(relayer.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe("unexpected_settle_error");
+  });
+});
+
+describe("relayer status polling", () => {
+  const makeParams = (overrides: Record<string, unknown> = {}) => ({
+    paymentPayload: buildPaymentPayloadV2(buildInvokeTxBase64()),
+    paymentRequirements: buildPaymentRequirementsV2(overrides),
+  });
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(verifyModule, "verify").mockResolvedValue({
+      isValid: true,
+      payer: "G-PAYER",
+    });
+    vi.spyOn(utils, "scValToJsonArg").mockImplementation(() => ({
+      address: "MOCK_ADDRESS",
+    }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  test("keeps polling when a status request fails", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    relayer.getTransaction
+      .mockRejectedValueOnce(new Error("Socket closed"))
+      .mockResolvedValueOnce({ status: "confirmed", hash: "HASH_RELAYER" });
+
+    const promise = settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    const result = await promise;
+
+    expect(relayer.getTransaction).toHaveBeenCalledTimes(2);
+    expect(result.success).toBe(true);
+    expect(result.transaction).toBe("HASH_RELAYER");
+  });
+
+  test("returns by the deadline when a status request hangs", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    relayer.getTransaction.mockImplementation(() => new Promise(() => {}));
+
+    let settled = false;
+    const promise = settle(
+      makeParams({ maxTimeoutSeconds: 2 }) as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    ).finally(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(settled).toBe(true);
+    const result = await promise;
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe("settle_exact_stellar_transaction_failed");
+  });
+
+  test("keeps polling past mined until confirmed", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    relayer.getTransaction
+      .mockResolvedValueOnce({ status: "mined", hash: "HASH_RELAYER" })
+      .mockResolvedValueOnce({ status: "confirmed", hash: "HASH_RELAYER" });
+
+    const promise = settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    const result = await promise;
+
+    expect(relayer.getTransaction).toHaveBeenCalledTimes(2);
+    expect(result.success).toBe(true);
+    expect(result.transaction).toBe("HASH_RELAYER");
+  });
+
+  test("returns the last status and hash when the deadline passes", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    relayer.getTransaction.mockResolvedValue({
+      status: "submitted",
+      hash: "HASH_PENDING",
+    });
+
+    const promise = settle(
+      makeParams({ maxTimeoutSeconds: 2 }) as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    const result = await promise;
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe("settle_exact_stellar_transaction_failed");
+    expect(result.transaction).toBe("HASH_PENDING");
+  });
+});
+
 describe("channel service under rate limiting", () => {
   const channelConfig = {
     ...baseNetworkConfig,
@@ -615,6 +974,31 @@ describe("channel service under rate limiting", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  test("uses a key unique to each settle call", async () => {
+    vi.spyOn(utils, "scValToJsonArg").mockImplementation(() => ({
+      address: "MOCK_ADDRESS",
+    }));
+    const relayer = makeRelayer();
+    await settle(makeParams() as any, makeApi(relayer), baseNetworkConfig);
+    const [, relayerOptions] = relayer.sendTransaction.mock.calls[0];
+
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(submitted)
+      .mockResolvedValueOnce(confirmed);
+    await settle(makeParams() as any, makeApi(), channelConfig);
+
+    const channelsKey: string = (fetchMock.mock.calls[0][1] as any).headers[
+      "Idempotency-Key"
+    ];
+    // Same payment, so the same payment hash; a different settle call
+    const [, paymentHash, attempt] = channelsKey.split(":");
+    const [, relayerHash, relayerAttempt] =
+      relayerOptions.idempotencyKey.split(":");
+    expect(paymentHash).toBe(relayerHash);
+    expect(attempt).not.toBe(relayerAttempt);
   });
 
   test("lets a slow submit run until the settlement deadline", async () => {

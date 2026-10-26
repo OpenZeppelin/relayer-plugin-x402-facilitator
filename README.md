@@ -23,7 +23,7 @@ The rest of this README explains each piece so you can add the plugin to your ow
 
 - Node.js 22.18+
 - pnpm 10+
-- An [OpenZeppelin Relayer](https://docs.openzeppelin.com/relayer) instance
+- An [OpenZeppelin Relayer](https://docs.openzeppelin.com/relayer) instance, version 1.9.0 or later. Settlements send an idempotency key so a resend after a lost Relayer reply returns the same transaction; older Relayers ignore the key, and that resend can create a second transaction, which fails on chain and costs a fee.
 - For each network you plan to serve, a Relayer account (relayer + signer) on that network. Unless you settle through the [Channels service](#using-with-stellar-channels-service), this account is the fee payer for every settlement, so it must be funded with XLM.
 
 ## Install
