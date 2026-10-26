@@ -60,7 +60,15 @@ vi.mock("@stellar/stellar-sdk", () => {
 
   const rpc = { Api: { isSimulationError: () => false } };
 
-  return { Address, Transaction, scValToNative, rpc, Operation: {}, xdr: {} };
+  return {
+    Address,
+    BASE_FEE: "100",
+    Transaction,
+    scValToNative,
+    rpc,
+    Operation: {},
+    xdr: {},
+  };
 });
 
 const networkConfig = {
@@ -818,7 +826,7 @@ describe("stellar verify", () => {
     expect(result.payer).toBe("G-PAYER");
   });
 
-  test("rejects transaction with fee below minimum resource fee", async () => {
+  test("accepts a client fee bid below the simulated resource fee", async () => {
     const tx = buildInvokeTxBase64({
       payer: "G-PAYER",
       payTo: "G-PAYEE",
@@ -834,92 +842,7 @@ describe("stellar verify", () => {
       amount: "200",
     });
 
-    // minResourceFee = 50000, transaction fee = 1000 -> should fail
-    const api = makeApi();
-    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
-    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
-      signedAddresses: ["G-PAYER"],
-      unsignedAddresses: [],
-    });
-    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
-      isValid: true,
-      currentLedger: 1000,
-    });
-
-    const result = await verify(
-      { paymentPayload: payload, paymentRequirements: reqs } as any,
-      api,
-      networkConfig,
-    );
-
-    expect(result.isValid).toBe(false);
-    expect(result.invalidReason).toBe(
-      "invalid_exact_stellar_payload_fee_below_minimum",
-    );
-    expect(result.payer).toBe("G-PAYER");
-  });
-
-  test("rejects transaction with fee exceeding maximum cap", async () => {
-    const tx = buildInvokeTxBase64({
-      payer: "G-PAYER",
-      payTo: "G-PAYEE",
-      amount: 200n,
-      fee: "200000",
-    });
-    const payload = buildPaymentPayloadV2(tx, {
-      payTo: "G-PAYEE",
-      amount: "200",
-    });
-    const reqs = buildPaymentRequirementsV2({
-      payTo: "G-PAYEE",
-      amount: "200",
-    });
-
-    const configWithMaxFee = {
-      ...networkConfig,
-      maxTransactionFeeStroops: "100000",
-    };
-
-    const api = makeApi();
-    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
-    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
-      signedAddresses: ["G-PAYER"],
-      unsignedAddresses: [],
-    });
-    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
-      isValid: true,
-      currentLedger: 1000,
-    });
-
-    const result = await verify(
-      { paymentPayload: payload, paymentRequirements: reqs } as any,
-      api,
-      configWithMaxFee,
-    );
-
-    expect(result.isValid).toBe(false);
-    expect(result.invalidReason).toBe(
-      "invalid_exact_stellar_payload_fee_exceeds_maximum",
-    );
-    expect(result.payer).toBe("G-PAYER");
-  });
-
-  test("accepts transaction with fee exactly equal to minimum resource fee", async () => {
-    const tx = buildInvokeTxBase64({
-      payer: "G-PAYER",
-      payTo: "G-PAYEE",
-      amount: 200n,
-      fee: "50000",
-    });
-    const payload = buildPaymentPayloadV2(tx, {
-      payTo: "G-PAYEE",
-      amount: "200",
-    });
-    const reqs = buildPaymentRequirementsV2({
-      payTo: "G-PAYEE",
-      amount: "200",
-    });
-
+    // Simulated minResourceFee is 50000, so the settlement fee is 50100
     const api = makeApi();
     vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
@@ -945,12 +868,12 @@ describe("stellar verify", () => {
     expect(result.payer).toBe("G-PAYER");
   });
 
-  test("accepts transaction with fee within valid range", async () => {
+  test("rejects when the simulated settlement fee exceeds the maximum cap", async () => {
     const tx = buildInvokeTxBase64({
       payer: "G-PAYER",
       payTo: "G-PAYEE",
       amount: 200n,
-      fee: "75000",
+      fee: "1000",
     });
     const payload = buildPaymentPayloadV2(tx, {
       payTo: "G-PAYEE",
@@ -961,11 +884,7 @@ describe("stellar verify", () => {
       amount: "200",
     });
 
-    const configWithMaxFee = {
-      ...networkConfig,
-      maxTransactionFeeStroops: "100000",
-    };
-
+    // Simulated minResourceFee is 50000, so the settlement fee is 50100
     const api = makeApi();
     vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
@@ -984,7 +903,94 @@ describe("stellar verify", () => {
     const result = await verify(
       { paymentPayload: payload, paymentRequirements: reqs } as any,
       api,
-      configWithMaxFee,
+      { ...networkConfig, maxTransactionFeeStroops: "50099" },
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_fee_exceeds_maximum",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("accepts a simulated settlement fee exactly at the maximum cap", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+      fee: "1000",
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    // Simulated minResourceFee is 50000, so the settlement fee is 50100
+    const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+    vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
+      isValid: true,
+      transferEvents: [],
+    });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      { ...networkConfig, maxTransactionFeeStroops: "50100" },
+    );
+
+    expect(result.isValid).toBe(true);
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("accepts a client fee bid above the cap when the simulated fee is within it", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+      fee: "1099295",
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    // Simulated minResourceFee is 50000, so the settlement fee is 50100
+    const api = makeApi();
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+    vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
+      isValid: true,
+      transferEvents: [],
+    });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      { ...networkConfig, maxTransactionFeeStroops: "1000000" },
     );
 
     expect(result.isValid).toBe(true);

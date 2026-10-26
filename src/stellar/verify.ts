@@ -18,6 +18,7 @@
  */
 import {
   Address,
+  BASE_FEE,
   Operation,
   Transaction,
   rpc,
@@ -70,7 +71,6 @@ type ErrorReason =
   | "invalid_exact_stellar_payload_auth_expiration_too_far"
   | "invalid_exact_stellar_payload_auth_already_expired"
   | "invalid_exact_stellar_payload_unsupported_credential_type"
-  | "invalid_exact_stellar_payload_fee_below_minimum"
   | "invalid_exact_stellar_payload_fee_exceeds_maximum"
   | "verify_network_mismatch"
   | "unexpected_verify_error"
@@ -391,30 +391,20 @@ export async function verify(
       );
     }
 
-    // 10. Validate transaction fee bounds
-    const successSimResponse =
-      simulateResponse as rpc.Api.SimulateTransactionSuccessResponse;
-    const minResourceFee = successSimResponse.minResourceFee;
-    const transactionFee = transaction.fee;
+    // 10. Validate the settlement fee against the safety ceiling
+    // Settle submits only the invocation and auth entries; the relayer or
+    // channel service rebuilds, simulates and pays its own fee. The client's
+    // fee bid is never paid, so the ceiling applies to the fee derived from
+    // this simulation (resource fee plus the base inclusion fee).
+    const minResourceFee = (
+      simulateResponse as rpc.Api.SimulateTransactionSuccessResponse
+    ).minResourceFee;
 
-    if (minResourceFee && transactionFee) {
-      if (BigInt(transactionFee) < BigInt(minResourceFee)) {
+    if (minResourceFee && networkConfig.maxTransactionFeeStroops) {
+      const settlementFee = BigInt(minResourceFee) + BigInt(BASE_FEE);
+      if (settlementFee > BigInt(networkConfig.maxTransactionFeeStroops)) {
         console.error(
-          `Transaction fee ${transactionFee} is below minimum resource fee ${minResourceFee}`,
-        );
-        return invalidResponse(
-          "invalid_exact_stellar_payload_fee_below_minimum",
-          fromAddress,
-        );
-      }
-    }
-
-    if (transactionFee && networkConfig.maxTransactionFeeStroops) {
-      if (
-        BigInt(transactionFee) > BigInt(networkConfig.maxTransactionFeeStroops)
-      ) {
-        console.error(
-          `Transaction fee ${transactionFee} exceeds maximum allowed fee ${networkConfig.maxTransactionFeeStroops}`,
+          `Simulated settlement fee ${settlementFee} (resource fee ${minResourceFee}) exceeds maximum allowed fee ${networkConfig.maxTransactionFeeStroops}; client fee bid was ${transaction.fee}`,
         );
         return invalidResponse(
           "invalid_exact_stellar_payload_fee_exceeds_maximum",
