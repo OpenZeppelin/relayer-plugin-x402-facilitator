@@ -54,6 +54,13 @@ interface ChannelServiceResponse {
 }
 
 const CHANNEL_POLL_INTERVAL_MS = 1000;
+/**
+ * Upper bound for one channel service status request, so a dropped
+ * connection cannot hang polling. Submits run until the settlement deadline:
+ * the channel service has no idempotency key, so a submit aborted after it
+ * was accepted cannot be found again.
+ */
+const CHANNEL_REQUEST_TIMEOUT_MS = 10_000;
 const BUFFER_MS = 2_000;
 const MAX_SUBMIT_RETRIES = 3;
 const INITIAL_BACKOFF_MS = 1000;
@@ -81,6 +88,40 @@ async function callChannelService(
   apiUrl: string,
   apiKey: string,
   params: Record<string, unknown>,
+  deadlineMs: number,
+  options: { requestTimeoutMs?: number } = {},
+): Promise<ChannelServiceResponse> {
+  // Abort at the request timeout or the settlement deadline, whichever is first
+  const timeoutMs = Math.max(
+    Math.min(options.requestTimeoutMs ?? Infinity, deadlineMs - Date.now()),
+    0,
+  );
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () =>
+      controller.abort(
+        new Error(`Channel service request timed out after ${timeoutMs}ms`),
+      ),
+    timeoutMs,
+  );
+
+  try {
+    return await sendChannelServiceRequest(
+      apiUrl,
+      apiKey,
+      params,
+      controller.signal,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function sendChannelServiceRequest(
+  apiUrl: string,
+  apiKey: string,
+  params: Record<string, unknown>,
+  signal: AbortSignal,
 ): Promise<ChannelServiceResponse> {
   const response = await fetch(apiUrl, {
     method: "POST",
@@ -89,6 +130,7 @@ async function callChannelService(
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({ params }),
+    signal,
   });
 
   if (!response.ok) {
@@ -107,7 +149,26 @@ async function callChannelService(
 }
 
 /**
+ * Tells whether a failed channel service status request is permanent: a 4xx
+ * response other than request timeout (408) or rate limit (429), such as a
+ * rejected API key. Retrying it cannot succeed.
+ */
+function isPermanentChannelError(error: unknown): boolean {
+  return (
+    error instanceof ChannelServiceError &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.status !== 408 &&
+    error.status !== 429
+  );
+}
+
+/**
  * Polls channel service for transaction status until confirmed, failed, or timeout.
+ * The transaction is already submitted, so a transient status request failure
+ * (dropped connection, rate limit, timeout, 5xx) counts as a missed poll, not
+ * a failed settlement. A permanent failure (see isPermanentChannelError) is
+ * rethrown.
  */
 async function pollTransactionStatus(
   apiUrl: string,
@@ -119,19 +180,35 @@ async function pollTransactionStatus(
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
-    const result = await callChannelService(apiUrl, apiKey, {
-      getTransaction: { transactionId },
-      ...(fundRelayerId ? { fundRelayerId } : {}),
-    });
+    try {
+      const result = await callChannelService(
+        apiUrl,
+        apiKey,
+        {
+          getTransaction: { transactionId },
+          ...(fundRelayerId ? { fundRelayerId } : {}),
+        },
+        deadline,
+        { requestTimeoutMs: CHANNEL_REQUEST_TIMEOUT_MS },
+      );
 
-    const status = result.data?.status;
-    if (
-      status &&
-      status !== "pending" &&
-      status !== "sent" &&
-      status !== "submitted"
-    ) {
-      return result;
+      const status = result.data?.status;
+      if (
+        status &&
+        status !== "pending" &&
+        status !== "sent" &&
+        status !== "submitted" &&
+        status !== "mined"
+      ) {
+        return result;
+      }
+    } catch (error) {
+      if (isPermanentChannelError(error)) throw error;
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `Channel service status request failed for ${transactionId}, retrying:`,
+        errorMsg,
+      );
     }
 
     const remaining = deadline - Date.now();
@@ -180,12 +257,17 @@ async function settleViaChannelService(
     let submitResponse!: ChannelServiceResponse;
     for (let attempt = 0; attempt <= MAX_SUBMIT_RETRIES; attempt++) {
       try {
-        submitResponse = await callChannelService(apiUrl, apiKey, {
-          func: funcXdr,
-          auth: authEntriesXdr,
-          skipWait: true,
-          ...(fundRelayerId ? { fundRelayerId } : {}),
-        });
+        submitResponse = await callChannelService(
+          apiUrl,
+          apiKey,
+          {
+            func: funcXdr,
+            auth: authEntriesXdr,
+            skipWait: true,
+            ...(fundRelayerId ? { fundRelayerId } : {}),
+          },
+          deadlineMs,
+        );
         break; // Success – exit retry loop
       } catch (error) {
         const nestedData =
