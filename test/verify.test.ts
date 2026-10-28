@@ -58,7 +58,9 @@ vi.mock("@stellar/stellar-sdk", () => {
     return v;
   };
 
-  const rpc = { Api: { isSimulationError: () => false } };
+  const rpc = {
+    Api: { isSimulationError: (r: any) => typeof r?.error === "string" },
+  };
 
   return {
     Address,
@@ -460,6 +462,9 @@ describe("stellar verify", () => {
     // The error is "missing_payer_auth" because no signed addresses means payer didn't sign
     expect(result.invalidReason).toBe(
       "invalid_exact_stellar_payload_missing_payer_auth",
+    );
+    expect(result.invalidMessage).toBe(
+      "Payer G-PAYER has not signed its auth entry",
     );
   });
 
@@ -1213,5 +1218,93 @@ describe("stellar verify", () => {
 
     expect(result.isValid).toBe(true);
     expect(result.payer).toBe("G-PAYER");
+  });
+});
+
+describe("stellar verify invalidMessage", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const run = async (simulationResult: Record<string, unknown>) => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const api = makeApi({
+      rpc: vi.fn().mockResolvedValue({ result: simulationResult }),
+    });
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+    return verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      networkConfig,
+    );
+  };
+
+  test("carries the simulation error", async () => {
+    const result = await run({
+      error: "HostError: trustline entry is missing for account G-PAYEE",
+    });
+
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_simulation_failed",
+    );
+    expect(result.invalidMessage).toBe(
+      "Simulation failed: HostError: trustline entry is missing for account G-PAYEE",
+    );
+  });
+
+  test("truncates a long simulation error", async () => {
+    const result = await run({ error: "x".repeat(5_000) });
+
+    expect(result.invalidMessage).toHaveLength(1_000);
+  });
+
+  test("carries the event validation error", async () => {
+    vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
+      isValid: false,
+      error: "Unexpected balance change for G-OTHER",
+    });
+
+    const result = await run({ events: ["mock_event"], minResourceFee: "100" });
+
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_unexpected_balance_changes",
+    );
+    expect(result.invalidMessage).toBe("Unexpected balance change for G-OTHER");
+  });
+
+  test("omits invalidMessage when there is no detail", async () => {
+    const result = await verify(
+      {
+        paymentPayload: buildPaymentPayloadV2(buildInvokeTxBase64()),
+        paymentRequirements: buildPaymentRequirementsV2({
+          asset: "C-UNSUPPORTED",
+        }),
+      } as any,
+      makeApi(),
+      networkConfig,
+    );
+
+    expect(result.invalidReason).toBe("unsupported_asset");
+    expect(result).not.toHaveProperty("invalidMessage");
   });
 });

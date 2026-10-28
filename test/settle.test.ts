@@ -230,6 +230,7 @@ describe("stellar settle", () => {
     const verifySpy = vi.spyOn(verifyModule, "verify").mockResolvedValue({
       isValid: false,
       invalidReason: "unsupported_asset",
+      invalidMessage: "Asset is not supported",
     });
 
     const tx = buildInvokeTxBase64();
@@ -243,6 +244,7 @@ describe("stellar settle", () => {
     expect(verifySpy).toHaveBeenCalled();
     expect(result.success).toBe(false);
     expect(result.errorReason).toBe("unsupported_asset");
+    expect(result.errorMessage).toBe("Asset is not supported");
   });
 
   test("settles via channel service legacy flow (direct hash, no polling)", async () => {
@@ -344,6 +346,9 @@ describe("stellar settle", () => {
     expect(fetchMock).toHaveBeenCalled();
     expect(result.success).toBe(false);
     expect(result.errorReason).toBe("settle_channel_service_failed");
+    expect(result.errorMessage).toBe(
+      "Channel service error (500): code=INTERNAL_ERROR",
+    );
   });
 
   test("fails when channel service transaction poll returns failed status", async () => {
@@ -370,7 +375,12 @@ describe("stellar settle", () => {
           ok: true,
           json: async () => ({
             success: true,
-            data: { transactionId: "TX_ID_1", status: "failed", hash: null },
+            data: {
+              transactionId: "TX_ID_1",
+              status: "failed",
+              hash: null,
+              error: "Transaction failed on-chain",
+            },
           }),
         } as any;
       });
@@ -392,6 +402,35 @@ describe("stellar settle", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(result.success).toBe(false);
     expect(result.errorReason).toBe("settle_channel_service_failed");
+    expect(result.errorMessage).toBe(
+      "Channel service transaction TX_ID_1 (status failed): Transaction failed on-chain",
+    );
+  });
+
+  test("does not return internal details of a failed channel service request", async () => {
+    vi.spyOn(verifyModule, "verify").mockResolvedValue({
+      isValid: true,
+      payer: "G-PAYER",
+    });
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(
+      new Error("connect ECONNREFUSED https://channel.service/submit"),
+    );
+
+    const result = await settle(
+      {
+        paymentPayload: buildPaymentPayloadV2(buildInvokeTxBase64()),
+        paymentRequirements: buildPaymentRequirementsV2(),
+      } as any,
+      makeApi(),
+      {
+        ...baseNetworkConfig,
+        channel_service_api_url: "https://channel.service/submit",
+        channel_service_api_key: "channel-key",
+      },
+    );
+
+    expect(result.errorReason).toBe("settle_channel_service_failed");
+    expect(result.errorMessage).toBe("Channel service request failed");
   });
 
   test("retries on POOL_CAPACITY error and succeeds", async () => {
@@ -587,6 +626,7 @@ describe("stellar settle", () => {
 
     expect(result.success).toBe(false);
     expect(result.errorReason).toBe("unexpected_settle_error");
+    expect(result).not.toHaveProperty("errorMessage");
   });
 });
 
@@ -752,6 +792,9 @@ describe("idempotent settlement", () => {
     expect(result.errorReason).toBe(
       "settle_exact_stellar_transaction_not_final",
     );
+    expect(result.errorMessage).toBe(
+      "Transaction send outcome unknown: the transaction may still land",
+    );
   });
 
   test("does not resend after a lost reply once the deadline is near", async () => {
@@ -828,6 +871,9 @@ describe("idempotent settlement", () => {
     expect(result.errorReason).toBe(
       "settle_exact_stellar_transaction_not_final",
     );
+    expect(result.errorMessage).toBe(
+      "Transaction send outcome unknown: the transaction may still land",
+    );
   });
 
   test("stops retrying an in-progress settle when the time budget runs out", async () => {
@@ -867,6 +913,9 @@ describe("idempotent settlement", () => {
     expect(result.success).toBe(false);
     expect(result.errorReason).toBe(
       "settle_exact_stellar_transaction_not_final",
+    );
+    expect(result.errorMessage).toBe(
+      "Transaction send outcome unknown: the transaction may still land",
     );
   });
 
@@ -996,7 +1045,61 @@ describe("relayer status polling", () => {
       "settle_exact_stellar_transaction_not_final",
     );
     expect(result.transaction).toBe("HASH_PENDING");
+    expect(result.errorMessage).toBe(
+      "Transaction still submitted at the deadline",
+    );
   });
+
+  test("returns the Relayer's reason for a failed transaction", async () => {
+    const relayer = makeRelayer();
+    relayer.getTransaction.mockResolvedValue({
+      status: "failed",
+      hash: "HASH_FAILED",
+      // Format of format_failure_reason in the Relayer's stellar/status.rs
+      status_reason:
+        "Transaction failed on-chain. reason=TxFailed op=Trapped contract_error=Contract(10)",
+    });
+
+    const result = await settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.transaction).toBe("HASH_FAILED");
+    expect(result.errorMessage).toBe(
+      "Transaction failed: Transaction failed on-chain. reason=TxFailed op=Trapped contract_error=Contract(10)",
+    );
+  });
+
+  test.each([
+    "Submission failed: Provider error: request to http://10.0.0.5:8000/rpc failed",
+    "Preparation failed: Signer error: vault key relayer-signer not found",
+    "Transaction status monitoring failed after 10 consecutive errors (total: 12). Last status: Submitted. Unable to determine final on-chain state.",
+  ])(
+    "does not return a Relayer reason that is not an on-chain failure (%s)",
+    async (statusReason) => {
+      const relayer = makeRelayer();
+      relayer.getTransaction.mockResolvedValue({
+        status: "failed",
+        hash: "HASH_FAILED",
+        status_reason: statusReason,
+      });
+
+      const result = await settle(
+        makeParams() as any,
+        makeApi(relayer),
+        baseNetworkConfig,
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.errorReason).toBe(
+        "settle_exact_stellar_transaction_failed",
+      );
+      expect(result.errorMessage).toBe("Transaction failed");
+    },
+  );
 
   test("does not report a confirmed status without a hash as settled", async () => {
     const relayer = makeRelayer();
@@ -1220,6 +1323,9 @@ describe("channel service under rate limiting", () => {
       expect(result.errorReason).toBe(
         "settle_exact_stellar_transaction_not_final",
       );
+      expect(result.errorMessage).toBe(
+        `Channel service transaction TX_ID_1 not final (status poll_failed): Channel service error (${status}): code=UNAUTHORIZED`,
+      );
     },
   );
 
@@ -1337,6 +1443,9 @@ describe("channel service under rate limiting", () => {
       "settle_exact_stellar_transaction_not_final",
     );
     expect(result.transaction).toBe("HASH_SENT");
+    expect(result.errorMessage).toBe(
+      "Channel service transaction TX_ID_1 not final (status timeout): Transaction polling timed out",
+    );
   });
 
   const channelError = (status: number, code: string) =>
@@ -1415,6 +1524,9 @@ describe("channel service under rate limiting", () => {
       expect(result.success).toBe(false);
       expect(result.errorReason).toBe(
         "settle_exact_stellar_transaction_not_final",
+      );
+      expect(result.errorMessage).toBe(
+        "Channel service submit outcome unknown: the transaction may still land",
       );
     },
   );

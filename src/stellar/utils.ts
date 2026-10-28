@@ -14,6 +14,11 @@ export const ESTIMATED_LEDGER_CLOSE_SECONDS = 5;
 
 // Default timeout in seconds for payment operations
 export const DEFAULT_TIMEOUT_SECONDS = 60;
+/**
+ * Upper bound on invalidMessage and errorMessage, since simulation errors and
+ * channel service errors can carry long event logs.
+ */
+export const MAX_MESSAGE_LENGTH = 1000;
 
 /**
  * Gets the network passphrase for a given network
