@@ -178,6 +178,11 @@ const SOCKET_ERROR_PREFIXES = [
 ];
 /** Plugin runtime error code when the socket to the Relayer closed. */
 const SOCKET_CLOSED_CODE = "ESOCKETCLOSED";
+/**
+ * Prefix of the Relayer's status reason for a transaction that failed on
+ * chain (`format_failure_reason` in its stellar/status.rs).
+ */
+const ON_CHAIN_FAILURE_PREFIX = "Transaction failed on-chain.";
 /** `mined` is not final: the transaction still awaits confirmation. */
 const FINAL_TRANSACTION_STATUSES = new Set([
   "confirmed",
@@ -845,7 +850,9 @@ function settlementResponse(
   }
 
   console.error(`Transaction failed with status: ${tx.status}`, tx);
-  const statusReason = (tx as StellarTransactionResponse).status_reason;
+  const statusReason = onChainFailureReason(
+    (tx as StellarTransactionResponse).status_reason,
+  );
   return errorResponse(
     "settle_exact_stellar_transaction_failed",
     network,
@@ -853,6 +860,20 @@ function settlementResponse(
     txHash,
     `Transaction ${tx.status}${statusReason ? `: ${statusReason}` : ""}`,
   );
+}
+
+/**
+ * Returns the Relayer's status reason only for an on-chain failure, which is
+ * public ledger data. Other reasons (submission and preparation failures,
+ * status monitoring errors) wrap provider and signer errors that can carry
+ * internal details, so they stay in the log.
+ */
+function onChainFailureReason(
+  statusReason: string | null | undefined,
+): string | undefined {
+  return statusReason?.startsWith(ON_CHAIN_FAILURE_PREFIX)
+    ? statusReason
+    : undefined;
 }
 
 /**
@@ -970,7 +991,7 @@ async function settleViaRelayer(
       network,
       payer,
       undefined,
-      "No reply to the transaction send before the deadline: the transaction may still land",
+      "Transaction send outcome unknown: the transaction may still land",
     );
   }
 
