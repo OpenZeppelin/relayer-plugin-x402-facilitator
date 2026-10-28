@@ -92,6 +92,7 @@ type ErrorReason =
   | "invalid_exact_stellar_payload_malformed"
   | "invalid_exact_stellar_payload_wrong_operation"
   | "settle_exact_stellar_transaction_failed"
+  | "settle_exact_stellar_transaction_not_final"
   | "settle_exact_stellar_network_mismatch"
   | "settle_channel_service_failed"
   | "unexpected_settle_error";
@@ -120,6 +121,44 @@ const CHANNEL_REQUEST_TIMEOUT_MS = 10_000;
 const BUFFER_MS = 2_000;
 const MAX_SUBMIT_RETRIES = 3;
 const INITIAL_BACKOFF_MS = 1000;
+/** Longest wait between channel service submits whose outcome is unknown. */
+const MAX_BACKOFF_MS = 4000;
+/**
+ * Channel service errors for a submit under an Idempotency-Key whose outcome
+ * is unknown: the fund relayer send failed but the transaction may still
+ * land, or another request with the key is still creating it. Resending with
+ * the same key is safe and returns the stored transaction.
+ */
+const CHANNEL_RESEND_CODES = new Set([
+  "IDEMPOTENCY_KEY_SEND_FAILED",
+  "IDEMPOTENCY_KEY_IN_PROGRESS",
+]);
+/**
+ * Channel service error for a key whose transaction the Relayer can no longer
+ * report. It may have landed; resending the key returns the same error.
+ */
+const CHANNEL_OUTCOME_UNKNOWN_CODE = "IDEMPOTENCY_KEY_OUTCOME_UNKNOWN";
+
+/** A request or send that the settlement deadline cut off before it answered. */
+class DeadlineError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DeadlineError";
+  }
+}
+
+/**
+ * A send whose outcome is still unknown when it gives up: an earlier attempt
+ * may have created the transaction, which may still land.
+ */
+class SendOutcomeUnknownError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `Send outcome unknown: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    this.name = "SendOutcomeUnknownError";
+  }
+}
 const IN_PROGRESS_BACKOFF_MS = 500;
 const RELAYER_POLL_INTERVAL_MS = 500;
 /** Relayer error when another request holds the key but has no transaction yet. */
@@ -211,7 +250,9 @@ async function callChannelService(
   const timer = setTimeout(
     () =>
       controller.abort(
-        new Error(`Channel service request timed out after ${timeoutMs}ms`),
+        new DeadlineError(
+          `Channel service request timed out after ${timeoutMs}ms`,
+        ),
       ),
     timeoutMs,
   );
@@ -285,9 +326,10 @@ function isPermanentChannelError(error: unknown): boolean {
  * Polls channel service for transaction status until confirmed, failed, or timeout.
  * The transaction is already submitted, so a transient status request failure
  * (dropped connection, rate limit, timeout, 5xx) counts as a missed poll, not
- * a failed settlement. A permanent failure (see isPermanentChannelError) is
- * rethrown. On timeout the last hash seen is returned, so a transaction that
- * landed after the deadline can still be reconciled.
+ * a failed settlement. A permanent failure (see isPermanentChannelError) stops
+ * polling with status `poll_failed`: the transaction's outcome is unknown, not
+ * failed. On timeout or poll failure the last hash seen is returned, so a
+ * transaction that lands can still be reconciled.
  */
 async function pollTransactionStatus(
   apiUrl: string,
@@ -325,9 +367,23 @@ async function pollTransactionStatus(
         return result;
       }
     } catch (error) {
-      if (isPermanentChannelError(error)) throw error;
-      waitMs = retryDelayMs(error, CHANNEL_POLL_INTERVAL_MS);
       const errorMsg = error instanceof Error ? error.message : String(error);
+      if (isPermanentChannelError(error)) {
+        console.error(
+          `Channel service status request failed permanently for ${transactionId}:`,
+          errorMsg,
+        );
+        return {
+          success: false,
+          data: {
+            transactionId,
+            status: "poll_failed",
+            hash: lastHash,
+            error: errorMsg,
+          },
+        };
+      }
+      waitMs = retryDelayMs(error, CHANNEL_POLL_INTERVAL_MS);
       console.warn(
         `Channel service status request failed for ${transactionId}, retrying:`,
         errorMsg,
@@ -381,15 +437,23 @@ async function settleViaChannelService(
     authEntriesCount: authEntriesXdr.length,
   });
 
+  // Hash the submit reported, kept for reconciliation if polling fails
+  let submitHash: string | undefined;
   try {
     // Submit with skipWait, retrying with exponential backoff on POOL_CAPACITY and on
     // Relayer rate limits (429), and with fundRelayerId to use the dedicated fund relayer
     // for fee-bumping. A Relayer 429 is sent by its middleware before the plugin runs, so
     // nothing was submitted. FEE_LIMIT_EXCEEDED is also a 429 but the fee budget stays
-    // spent until it resets, so it is not retried.
+    // spent until it resets, so it is not retried. A submit whose outcome is unknown
+    // (see CHANNEL_RESEND_CODES) is resent with the same key until the deadline.
     const fundRelayerId = networkConfig.channel_service_fund_relayer_id;
     let submitResponse!: ChannelServiceResponse;
-    for (let attempt = 0; attempt <= MAX_SUBMIT_RETRIES; attempt++) {
+    // Once an attempt leaves the outcome unknown, a later failure does not
+    // settle it: the earlier submit may still land
+    let outcomeUnknown = false;
+    const giveUp = (error: unknown) =>
+      outcomeUnknown ? new SendOutcomeUnknownError(error) : error;
+    for (let attempt = 0; ; attempt++) {
       try {
         submitResponse = await callChannelService(
           apiUrl,
@@ -412,18 +476,26 @@ async function settleViaChannelService(
           error instanceof ChannelServiceError &&
           error.status === 429 &&
           error.code !== "FEE_LIMIT_EXCEEDED";
+        const isResendable =
+          error instanceof ChannelServiceError &&
+          CHANNEL_RESEND_CODES.has(String(error.code));
+        if (isResendable) outcomeUnknown = true;
 
         if (
-          !(isPoolCapacity || isRateLimited) ||
-          attempt === MAX_SUBMIT_RETRIES
+          !(isPoolCapacity || isRateLimited || isResendable) ||
+          (!isResendable && attempt >= MAX_SUBMIT_RETRIES)
         ) {
-          throw error; // Not retryable or exhausted retries
+          throw giveUp(error); // Not retryable or exhausted retries
         }
 
-        const reason = isPoolCapacity ? "POOL_CAPACITY" : "Rate limited (429)";
+        const reason = isResendable
+          ? `Outcome unknown (${(error as ChannelServiceError).code})`
+          : isPoolCapacity
+            ? "POOL_CAPACITY"
+            : "Rate limited (429)";
         const backoffMs = retryDelayMs(
           error,
-          INITIAL_BACKOFF_MS * Math.pow(2, attempt),
+          Math.min(INITIAL_BACKOFF_MS * Math.pow(2, attempt), MAX_BACKOFF_MS),
         );
         const remaining = deadlineMs - Date.now();
 
@@ -431,16 +503,17 @@ async function settleViaChannelService(
           console.warn(
             `${reason} retry skipped: insufficient time budget (${remaining}ms remaining, need ${backoffMs}ms)`,
           );
-          throw error;
+          throw giveUp(error);
         }
 
         console.log(
-          `${reason}, retrying attempt ${attempt + 1}/${MAX_SUBMIT_RETRIES} after ${backoffMs}ms`,
+          `${reason}, retrying attempt ${attempt + 1} after ${backoffMs}ms`,
         );
         await new Promise((resolve) => setTimeout(resolve, backoffMs));
       }
     }
 
+    submitHash = submitResponse.data?.hash ?? undefined;
     if (!submitResponse.success) {
       console.error("Channel service submission failed:", submitResponse);
       return errorResponse(
@@ -451,8 +524,14 @@ async function settleViaChannelService(
       );
     }
 
-    // Legacy flow: channel service confirmed directly with a hash (no skipWait support)
-    if (submitResponse.data?.hash) {
+    // Legacy flow: channel service confirmed directly with a hash (no skipWait support).
+    // A skipWait or idempotent repeat response can carry the hash of a transaction that
+    // is not final yet, so only a confirmed status, or none from older services, counts.
+    const submitStatus = submitResponse.data?.status;
+    if (
+      submitResponse.data?.hash &&
+      (submitStatus === undefined || submitStatus === "confirmed")
+    ) {
       console.log(
         "Transaction confirmed via channel service (legacy):",
         submitResponse.data.hash,
@@ -463,10 +542,15 @@ async function settleViaChannelService(
     // Async flow: channel service returned a transactionId for polling
     if (!submitResponse.data?.transactionId) {
       console.error(
-        "Channel service returned no hash or transactionId:",
+        "Channel service returned no confirmed hash or transactionId:",
         submitResponse,
       );
-      return errorResponse("settle_channel_service_failed", network, payer);
+      return errorResponse(
+        "settle_channel_service_failed",
+        network,
+        payer,
+        submitResponse.data?.hash ?? undefined,
+      );
     }
 
     const transactionId = submitResponse.data.transactionId;
@@ -479,7 +563,12 @@ async function settleViaChannelService(
     const remainingMs = deadlineMs - Date.now();
     if (remainingMs <= 0) {
       console.error("No time remaining for polling after submit");
-      return errorResponse("settle_channel_service_failed", network, payer);
+      return errorResponse(
+        "settle_exact_stellar_transaction_not_final",
+        network,
+        payer,
+        submitResponse.data?.hash ?? undefined,
+      );
     }
     const result = await pollTransactionStatus(
       apiUrl,
@@ -489,19 +578,38 @@ async function settleViaChannelService(
       fundRelayerId,
     );
 
-    if (result.data?.status === "confirmed" && result.data?.hash) {
+    // Polling can end without a hash; the submit may already have reported one
+    const lastHash = result.data?.hash ?? submitHash;
+    const pollStatus = result.data?.status;
+    if (pollStatus === "confirmed" && result.data?.hash) {
       console.log(
         "Transaction confirmed via channel service:",
         result.data.hash,
       );
       return successResponse(result.data.hash, network, payer);
+    } else if (
+      // Accepted but not seen final: timed out, polling failed, or confirmed without a hash
+      pollStatus === "timeout" ||
+      pollStatus === "poll_failed" ||
+      pollStatus === "confirmed"
+    ) {
+      console.error(
+        "Channel service transaction not final at deadline:",
+        result,
+      );
+      return errorResponse(
+        "settle_exact_stellar_transaction_not_final",
+        network,
+        payer,
+        lastHash,
+      );
     } else {
       console.error("Channel service transaction failed:", result);
       return errorResponse(
         "settle_channel_service_failed",
         network,
         payer,
-        result.data?.hash ?? undefined,
+        lastHash,
       );
     }
   } catch (channelError) {
@@ -510,8 +618,31 @@ async function settleViaChannelService(
         ? channelError.message
         : String(channelError);
     console.error("Channel service error:", errorMsg);
-    return errorResponse("settle_channel_service_failed", network, payer);
+    // The submit's outcome is unknown, so the transaction may still land
+    return errorResponse(
+      isChannelOutcomeUnknown(channelError)
+        ? "settle_exact_stellar_transaction_not_final"
+        : "settle_channel_service_failed",
+      network,
+      payer,
+      submitHash,
+    );
   }
+}
+
+/**
+ * Tells whether a channel service submit error leaves its outcome unknown:
+ * cut off by the deadline after it may have been accepted, resent with the
+ * same key until time ran out, or reported unknown by the channel service.
+ */
+function isChannelOutcomeUnknown(error: unknown): boolean {
+  if (error instanceof DeadlineError) return true;
+  if (error instanceof SendOutcomeUnknownError) return true;
+  return (
+    error instanceof ChannelServiceError &&
+    (CHANNEL_RESEND_CODES.has(String(error.code)) ||
+      error.code === CHANNEL_OUTCOME_UNKNOWN_CODE)
+  );
 }
 
 /**
@@ -556,7 +687,8 @@ function withTimeout<T>(
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+      () =>
+        reject(new DeadlineError(`${label} timed out after ${timeoutMs}ms`)),
       timeoutMs,
     );
   });
@@ -596,10 +728,14 @@ async function sendWithIdempotencyKey(
   idempotencyKey: string,
   deadlineMs: number,
 ): ReturnType<Relayer["sendTransaction"]> {
+  // Once a reply is lost, a later failure does not settle the outcome: the
+  // earlier send may have created the transaction
+  let outcomeUnknown = false;
   for (let attempt = 0; ; attempt++) {
     const remainingMs = deadlineMs - Date.now();
     if (remainingMs <= 0) {
-      throw new Error("No time remaining to send the transaction");
+      const error = new Error("No time remaining to send the transaction");
+      throw outcomeUnknown ? new SendOutcomeUnknownError(error) : error;
     }
     try {
       return await withTimeout(
@@ -610,14 +746,19 @@ async function sendWithIdempotencyKey(
         "Send to Relayer",
       );
     } catch (error) {
-      if (!isRetryableSendError(error)) {
-        throw error;
+      // Sent but unanswered by the deadline: the transaction may exist
+      if (error instanceof DeadlineError) {
+        throw new SendOutcomeUnknownError(error);
       }
+      if (!isRetryableSendError(error)) {
+        throw outcomeUnknown ? new SendOutcomeUnknownError(error) : error;
+      }
+      outcomeUnknown = true;
 
       const backoffMs = IN_PROGRESS_BACKOFF_MS * Math.pow(2, attempt);
       const remaining = deadlineMs - Date.now();
       if (attempt >= MAX_SUBMIT_RETRIES || remaining <= backoffMs) {
-        throw error;
+        throw new SendOutcomeUnknownError(error);
       }
 
       console.log(
@@ -636,10 +777,11 @@ function settlementResponse(
   network: string,
   payer?: string,
 ): SettleResponse {
+  // The transaction was created, so without a final status it may still land
   if (!tx) {
     console.error("No transaction status received before the deadline");
     return errorResponse(
-      "settle_exact_stellar_transaction_failed",
+      "settle_exact_stellar_transaction_not_final",
       network,
       payer,
     );
@@ -647,9 +789,23 @@ function settlementResponse(
 
   const txHash = (tx as StellarTransactionResponse).hash;
 
-  if (tx.status === "confirmed") {
+  if (tx.status === "confirmed" && txHash) {
     console.log("Transaction confirmed:", txHash);
-    return successResponse(txHash!, network, payer);
+    return successResponse(txHash, network, payer);
+  }
+
+  // Confirmed without a hash cannot be reported as settled; reconcile it
+  if (tx.status === "confirmed" || !FINAL_TRANSACTION_STATUSES.has(tx.status)) {
+    console.error(
+      `Transaction not final at deadline, status: ${tx.status}`,
+      tx,
+    );
+    return errorResponse(
+      "settle_exact_stellar_transaction_not_final",
+      network,
+      payer,
+      txHash ?? undefined,
+    );
   }
 
   console.error(`Transaction failed with status: ${tx.status}`, tx);
@@ -760,12 +916,23 @@ async function settleViaRelayer(
   deadlineMs: number,
   payer?: string,
 ): Promise<SettleResponse> {
-  const txResult = await sendWithIdempotencyKey(
-    relayer,
-    request,
-    idempotencyKey,
-    deadlineMs,
-  );
+  let txResult: Awaited<ReturnType<typeof sendWithIdempotencyKey>>;
+  try {
+    txResult = await sendWithIdempotencyKey(
+      relayer,
+      request,
+      idempotencyKey,
+      deadlineMs,
+    );
+  } catch (error) {
+    if (!(error instanceof SendOutcomeUnknownError)) throw error;
+    console.error("Transaction not final at deadline:", error.message);
+    return errorResponse(
+      "settle_exact_stellar_transaction_not_final",
+      network,
+      payer,
+    );
+  }
 
   // Wait for transaction confirmation using remaining time budget
   const confirmedTx = await waitForRelayerTransaction(
