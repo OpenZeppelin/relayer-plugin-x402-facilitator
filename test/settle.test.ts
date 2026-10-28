@@ -740,6 +740,120 @@ describe("channel service under rate limiting", () => {
     },
   );
 
+  const rateLimited = (retryAfter?: string, body = "Too Many Requests") =>
+    ({
+      ok: false,
+      status: 429,
+      headers: new Headers(
+        retryAfter === undefined ? {} : { "retry-after": retryAfter },
+      ),
+      text: async () => body,
+    }) as any;
+
+  test("retries a submit rejected by the Relayer rate limiter", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(rateLimited("0"))
+      .mockResolvedValueOnce(submitted)
+      .mockResolvedValueOnce(confirmed);
+
+    const promise = settle(makeParams() as any, makeApi(), channelConfig);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const result = await promise;
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(result.success).toBe(true);
+    expect(result.transaction).toBe("HASH_CHANNEL");
+  });
+
+  test("does not retry a submit rejected with FEE_LIMIT_EXCEEDED", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      rateLimited(
+        undefined,
+        JSON.stringify({
+          success: false,
+          data: { code: "FEE_LIMIT_EXCEEDED", error: "Fee limit exceeded" },
+        }),
+      ),
+    );
+
+    const result = await settle(makeParams() as any, makeApi(), channelConfig);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe("settle_channel_service_failed");
+  });
+
+  test("waits for retry-after before retrying a rate limited submit", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(rateLimited("5"))
+      .mockResolvedValueOnce(submitted)
+      .mockResolvedValueOnce(confirmed);
+
+    const promise = settle(
+      makeParams({ maxTimeoutSeconds: 60 }) as any,
+      makeApi(),
+      channelConfig,
+    );
+    await vi.advanceTimersByTimeAsync(4_900);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await promise;
+    expect(result.success).toBe(true);
+  });
+
+  test("waits for retry-after before polling again", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(submitted)
+      .mockResolvedValueOnce(rateLimited("3"))
+      .mockResolvedValueOnce(confirmed);
+
+    const promise = settle(
+      makeParams({ maxTimeoutSeconds: 60 }) as any,
+      makeApi(),
+      channelConfig,
+    );
+    await vi.advanceTimersByTimeAsync(2_900);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await promise;
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(result.success).toBe(true);
+  });
+
+  test("returns the last seen hash when polling times out", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(submitted)
+      .mockResolvedValueOnce(
+        okResponse({
+          transactionId: "TX_ID_1",
+          status: "submitted",
+          hash: "HASH_SENT",
+        }),
+      )
+      .mockRejectedValue(new TypeError("fetch failed"));
+
+    const promise = settle(
+      makeParams({ maxTimeoutSeconds: 10 }) as any,
+      makeApi(),
+      channelConfig,
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    const result = await promise;
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe("settle_channel_service_failed");
+    expect(result.transaction).toBe("HASH_SENT");
+  });
+
   test("returns within the deadline when a status request hangs", async () => {
     vi.useFakeTimers();
     vi.spyOn(globalThis, "fetch")

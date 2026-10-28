@@ -66,18 +66,44 @@ const MAX_SUBMIT_RETRIES = 3;
 const INITIAL_BACKOFF_MS = 1000;
 
 /**
- * Custom error for channel service failures that preserves the HTTP status and parsed response body.
+ * Custom error for channel service failures that preserves the HTTP status, parsed response body,
+ * error code and the server's `retry-after` hint.
  */
 class ChannelServiceError extends Error {
+  public readonly code: unknown;
+
   constructor(
     public readonly status: number,
     public readonly data: Record<string, unknown> | null,
+    public readonly retryAfterMs: number | null = null,
   ) {
     const nested = data?.data as Record<string, unknown> | undefined;
-    const code = nested?.code ?? data?.code ?? "unknown";
-    super(`Channel service error (${status}): code=${code}`);
+    const code = nested?.code ?? data?.code;
+    super(`Channel service error (${status}): code=${code ?? "unknown"}`);
     this.name = "ChannelServiceError";
+    this.code = code;
   }
+}
+
+/**
+ * Parses a `retry-after` header given in seconds. The Relayer rate limiter
+ * sends whole seconds, often 0, so callers keep their own minimum delay.
+ */
+function parseRetryAfterMs(header: string | null | undefined): number | null {
+  const seconds = Number(header);
+  return header && Number.isFinite(seconds) && seconds > 0
+    ? seconds * 1000
+    : null;
+}
+
+/**
+ * Delay before retrying after `error`: `minMs`, or longer when the server
+ * asked to wait longer.
+ */
+function retryDelayMs(error: unknown, minMs: number): number {
+  const retryAfterMs =
+    error instanceof ChannelServiceError ? error.retryAfterMs : null;
+  return Math.max(minMs, retryAfterMs ?? 0);
 }
 
 /**
@@ -142,7 +168,11 @@ async function sendChannelServiceRequest(
       // Response body is not JSON – preserve raw text in data
       data = { rawBody: bodyText };
     }
-    throw new ChannelServiceError(response.status, data);
+    throw new ChannelServiceError(
+      response.status,
+      data,
+      parseRetryAfterMs(response.headers?.get("retry-after")),
+    );
   }
 
   return response.json() as Promise<ChannelServiceResponse>;
@@ -168,7 +198,8 @@ function isPermanentChannelError(error: unknown): boolean {
  * The transaction is already submitted, so a transient status request failure
  * (dropped connection, rate limit, timeout, 5xx) counts as a missed poll, not
  * a failed settlement. A permanent failure (see isPermanentChannelError) is
- * rethrown.
+ * rethrown. On timeout the last hash seen is returned, so a transaction that
+ * landed after the deadline can still be reconciled.
  */
 async function pollTransactionStatus(
   apiUrl: string,
@@ -178,8 +209,10 @@ async function pollTransactionStatus(
   fundRelayerId?: string,
 ): Promise<ChannelServiceResponse> {
   const deadline = Date.now() + timeoutMs;
+  let lastHash: string | null = null;
 
   while (Date.now() < deadline) {
+    let waitMs = CHANNEL_POLL_INTERVAL_MS;
     try {
       const result = await callChannelService(
         apiUrl,
@@ -192,6 +225,7 @@ async function pollTransactionStatus(
         { requestTimeoutMs: CHANNEL_REQUEST_TIMEOUT_MS },
       );
 
+      lastHash = result.data?.hash ?? lastHash;
       const status = result.data?.status;
       if (
         status &&
@@ -204,6 +238,7 @@ async function pollTransactionStatus(
       }
     } catch (error) {
       if (isPermanentChannelError(error)) throw error;
+      waitMs = retryDelayMs(error, CHANNEL_POLL_INTERVAL_MS);
       const errorMsg = error instanceof Error ? error.message : String(error);
       console.warn(
         `Channel service status request failed for ${transactionId}, retrying:`,
@@ -214,7 +249,7 @@ async function pollTransactionStatus(
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
     await new Promise((resolve) =>
-      setTimeout(resolve, Math.min(CHANNEL_POLL_INTERVAL_MS, remaining)),
+      setTimeout(resolve, Math.min(waitMs, remaining)),
     );
   }
 
@@ -223,6 +258,7 @@ async function pollTransactionStatus(
     data: {
       transactionId,
       status: "timeout",
+      hash: lastHash,
       error: "Transaction polling timed out",
     },
   };
@@ -251,8 +287,11 @@ async function settleViaChannelService(
   });
 
   try {
-    // Submit with skipWait, retrying on POOL_CAPACITY errors with exponential backoff
-    // and with fundRelayerId to use the dedicated fund relayer for fee-bumping.
+    // Submit with skipWait, retrying with exponential backoff on POOL_CAPACITY and on
+    // Relayer rate limits (429), and with fundRelayerId to use the dedicated fund relayer
+    // for fee-bumping. A Relayer 429 is sent by its middleware before the plugin runs, so
+    // nothing was submitted. FEE_LIMIT_EXCEEDED is also a 429 but the fee budget stays
+    // spent until it resets, so it is not retried.
     const fundRelayerId = networkConfig.channel_service_fund_relayer_id;
     let submitResponse!: ChannelServiceResponse;
     for (let attempt = 0; attempt <= MAX_SUBMIT_RETRIES; attempt++) {
@@ -270,31 +309,37 @@ async function settleViaChannelService(
         );
         break; // Success – exit retry loop
       } catch (error) {
-        const nestedData =
-          error instanceof ChannelServiceError
-            ? (error.data?.data as Record<string, unknown> | undefined)
-            : undefined;
         const isPoolCapacity =
           error instanceof ChannelServiceError &&
-          (nestedData?.code === "POOL_CAPACITY" ||
-            error.data?.code === "POOL_CAPACITY");
+          error.code === "POOL_CAPACITY";
+        const isRateLimited =
+          error instanceof ChannelServiceError &&
+          error.status === 429 &&
+          error.code !== "FEE_LIMIT_EXCEEDED";
 
-        if (!isPoolCapacity || attempt === MAX_SUBMIT_RETRIES) {
+        if (
+          !(isPoolCapacity || isRateLimited) ||
+          attempt === MAX_SUBMIT_RETRIES
+        ) {
           throw error; // Not retryable or exhausted retries
         }
 
-        const backoffMs = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
+        const reason = isPoolCapacity ? "POOL_CAPACITY" : "Rate limited (429)";
+        const backoffMs = retryDelayMs(
+          error,
+          INITIAL_BACKOFF_MS * Math.pow(2, attempt),
+        );
         const remaining = deadlineMs - Date.now();
 
         if (remaining <= backoffMs) {
           console.warn(
-            `POOL_CAPACITY retry skipped: insufficient time budget (${remaining}ms remaining, need ${backoffMs}ms)`,
+            `${reason} retry skipped: insufficient time budget (${remaining}ms remaining, need ${backoffMs}ms)`,
           );
           throw error;
         }
 
         console.log(
-          `POOL_CAPACITY error, retrying attempt ${attempt + 1}/${MAX_SUBMIT_RETRIES} after ${backoffMs}ms`,
+          `${reason}, retrying attempt ${attempt + 1}/${MAX_SUBMIT_RETRIES} after ${backoffMs}ms`,
         );
         await new Promise((resolve) => setTimeout(resolve, backoffMs));
       }
