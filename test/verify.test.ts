@@ -842,7 +842,8 @@ describe("stellar verify", () => {
       amount: "200",
     });
 
-    // Simulated minResourceFee is 50000, so the settlement fee is 50100
+    // Simulated minResourceFee is 50000, so the settlement fee is 50100,
+    // within the 60000 cap. The client's 1000 stroop bid is ignored.
     const api = makeApi();
     vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
     vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
@@ -861,10 +862,61 @@ describe("stellar verify", () => {
     const result = await verify(
       { paymentPayload: payload, paymentRequirements: reqs } as any,
       api,
-      networkConfig,
+      { ...networkConfig, maxTransactionFeeStroops: "60000" },
     );
 
     expect(result.isValid).toBe(true);
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("rejects when a cap is set and the simulation has no minResourceFee", async () => {
+    const tx = buildInvokeTxBase64({
+      payer: "G-PAYER",
+      payTo: "G-PAYEE",
+      amount: 200n,
+      fee: "1000",
+    });
+    const payload = buildPaymentPayloadV2(tx, {
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+    const reqs = buildPaymentRequirementsV2({
+      payTo: "G-PAYEE",
+      amount: "200",
+    });
+
+    const api = makeApi({
+      rpc: vi.fn().mockImplementation((params: any) => {
+        if (params.method === "getLatestLedger") {
+          return Promise.resolve({ result: { sequence: 1000 } });
+        }
+        return Promise.resolve({ result: { events: ["mock_event"] } });
+      }),
+    });
+    vi.spyOn(utils, "validateAuthEntries").mockReturnValue(null);
+    vi.spyOn(utils, "getSignedAddressesFromAuthEntries").mockReturnValue({
+      signedAddresses: ["G-PAYER"],
+      unsignedAddresses: [],
+    });
+    vi.spyOn(utils, "validateAuthEntryExpirations").mockResolvedValue({
+      isValid: true,
+      currentLedger: 1000,
+    });
+    vi.spyOn(utils, "validateSimulationEvents").mockReturnValue({
+      isValid: true,
+      transferEvents: [],
+    });
+
+    const result = await verify(
+      { paymentPayload: payload, paymentRequirements: reqs } as any,
+      api,
+      { ...networkConfig, maxTransactionFeeStroops: "60000" },
+    );
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_simulation_failed",
+    );
     expect(result.payer).toBe("G-PAYER");
   });
 

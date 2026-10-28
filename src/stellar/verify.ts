@@ -11,6 +11,8 @@
  * 7. Validate auth entry expiration is within allowed window
  * 8. Validate transaction source is not the relayer (security check)
  * 9. Re-simulate transaction to ensure it will succeed
+ * 10. Validate the simulation-derived settlement fee against the safety ceiling
+ * 11. Validate simulation events show only the expected transfer
  *
  * Note: For Soroban transactions, signatures are in auth entries, not the envelope.
  * The client signs auth entries which authorize the contract invocation.
@@ -395,12 +397,25 @@ export async function verify(
     // Settle submits only the invocation and auth entries; the relayer or
     // channel service rebuilds, simulates and pays its own fee. The client's
     // fee bid is never paid, so the ceiling applies to the fee derived from
-    // this simulation (resource fee plus the base inclusion fee).
+    // this simulation (resource fee plus the base inclusion fee). A channel
+    // service fee bump bids a higher inclusion fee on top, which the client
+    // cannot influence; see maxTransactionFeeStroops in the README.
     const minResourceFee = (
       simulateResponse as rpc.Api.SimulateTransactionSuccessResponse
     ).minResourceFee;
 
-    if (minResourceFee && networkConfig.maxTransactionFeeStroops) {
+    if (networkConfig.maxTransactionFeeStroops) {
+      // Fail closed: without a resource fee the ceiling cannot be enforced
+      if (typeof minResourceFee !== "string" || !/^\d+$/.test(minResourceFee)) {
+        console.error(
+          `Simulation returned no valid minResourceFee (${minResourceFee}); cannot enforce maximum fee ${networkConfig.maxTransactionFeeStroops}`,
+        );
+        return invalidResponse(
+          "invalid_exact_stellar_payload_simulation_failed",
+          fromAddress,
+        );
+      }
+
       const settlementFee = BigInt(minResourceFee) + BigInt(BASE_FEE);
       if (settlementFee > BigInt(networkConfig.maxTransactionFeeStroops)) {
         console.error(
@@ -413,7 +428,7 @@ export async function verify(
       }
     }
 
-    // 12. Validate simulation events show only expected balance changes
+    // 11. Validate simulation events show only expected balance changes
     // Must emit events showing only the expected balance changes
     // (recipient increase, payer decrease) for requirements.amount
     const simulationEvents =
