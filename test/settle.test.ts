@@ -10,7 +10,7 @@ import {
   buildPaymentRequirementsV2,
 } from "./helpers/payload";
 
-import { settle } from "../src/stellar/settle";
+import { settle, settlementIdempotencyKey } from "../src/stellar/settle";
 
 vi.mock("@stellar/stellar-sdk", () => {
   class Transaction {
@@ -71,18 +71,16 @@ const baseNetworkConfig = {
   assets: ["ASSET_CONTRACT"],
 };
 
-const makeRelayer = () => {
-  const wait = vi
+const makeRelayer = () => ({
+  getRelayer: vi
     .fn()
-    .mockResolvedValue({ status: "confirmed", hash: "HASH_RELAYER" });
-  return {
-    getRelayer: vi
-      .fn()
-      .mockResolvedValue({ network: "testnet", address: "RELAYER_ADDR" }),
-    rpc: vi.fn().mockResolvedValue({ result: {} }),
-    sendTransaction: vi.fn().mockResolvedValue({ wait }),
-  };
-};
+    .mockResolvedValue({ network: "testnet", address: "RELAYER_ADDR" }),
+  rpc: vi.fn().mockResolvedValue({ result: {} }),
+  sendTransaction: vi.fn().mockResolvedValue({ id: "tx-new" }),
+  getTransaction: vi
+    .fn()
+    .mockResolvedValue({ status: "confirmed", hash: "HASH_RELAYER" }),
+});
 
 const makeApi = (relayer = makeRelayer()) =>
   ({
@@ -144,6 +142,11 @@ describe("stellar settle", () => {
       expect.objectContaining({
         operations: expect.any(Array),
       }),
+      {
+        idempotencyKey: expect.stringMatching(
+          /^x402-stellar-settle:[0-9a-f]{64}:[0-9a-f-]{36}$/,
+        ),
+      },
     );
     expect(result.success).toBe(true);
     expect(result.transaction).toBe("HASH_RELAYER");
@@ -204,6 +207,15 @@ describe("stellar settle", () => {
     // First call should include skipWait
     const firstCallBody = JSON.parse((fetchMock.mock.calls[0][1] as any).body);
     expect(firstCallBody.params.skipWait).toBe(true);
+    // Submit carries the idempotency key; the status poll does not
+    const firstCallHeaders = (fetchMock.mock.calls[0][1] as any).headers;
+    expect(firstCallHeaders["Idempotency-Key"]).toMatch(
+      /^x402-stellar-settle:[0-9a-f]{64}:[0-9a-f-]{36}$/,
+    );
+    expect(firstCallHeaders.Authorization).toBe("Bearer channel-key");
+    expect(
+      (fetchMock.mock.calls[1][1] as any).headers["Idempotency-Key"],
+    ).toBeUndefined();
     // Second call should be get-transaction with fundRelayerId
     const secondCallBody = JSON.parse((fetchMock.mock.calls[1][1] as any).body);
     expect(secondCallBody.params.getTransaction.transactionId).toBe("TX_ID_1");
@@ -578,6 +590,449 @@ describe("stellar settle", () => {
   });
 });
 
+describe("settlementIdempotencyKey", () => {
+  test("is stable for the same payment and attempt", () => {
+    expect(settlementIdempotencyKey("testnet", "FUNC", ["AUTH_A"], "a1")).toBe(
+      settlementIdempotencyKey("testnet", "FUNC", ["AUTH_A"], "a1"),
+    );
+  });
+
+  test("differs by network, invocation, auth entries and attempt", () => {
+    const key = settlementIdempotencyKey("testnet", "FUNC", ["AUTH_A"], "a1");
+    for (const other of [
+      settlementIdempotencyKey("mainnet", "FUNC", ["AUTH_A"], "a1"),
+      settlementIdempotencyKey("testnet", "FUNC_900", ["AUTH_A"], "a1"),
+      settlementIdempotencyKey("testnet", "FUNC", ["AUTH_B"], "a1"),
+      settlementIdempotencyKey("testnet", "FUNC", ["AUTH_A", "AUTH_B"], "a1"),
+      settlementIdempotencyKey("testnet", "FUNC", ["AUTH_A"], "a2"),
+    ]) {
+      expect(other).not.toBe(key);
+    }
+  });
+
+  test("fits the Relayer key length limit", () => {
+    const key = settlementIdempotencyKey(
+      "testnet",
+      "FUNC",
+      ["AUTH_A"],
+      "6f1c2a9e-3b6d-4f2e-9c1a-0d7e5b2f8a41",
+    );
+    expect(key.length).toBeLessThanOrEqual(255);
+  });
+});
+
+describe("idempotent settlement", () => {
+  const IN_PROGRESS_ERROR =
+    "Relayer error: A request with this Idempotency-Key is already in progress";
+
+  const makeParams = (overrides: Record<string, unknown> = {}) => ({
+    paymentPayload: buildPaymentPayloadV2(buildInvokeTxBase64()),
+    paymentRequirements: buildPaymentRequirementsV2(overrides),
+  });
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(utils, "scValToJsonArg").mockImplementation(() => ({
+      address: "MOCK_ADDRESS",
+    }));
+    vi.spyOn(verifyModule, "verify").mockResolvedValue({
+      isValid: true,
+      payer: "G-PAYER",
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  test("rejects a second settle of a payment that already settled", async () => {
+    const relayer = makeRelayer();
+    const first = await settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+    expect(first.success).toBe(true);
+
+    // The used nonce fails verification; nothing is recovered or resent
+    vi.mocked(verifyModule.verify).mockResolvedValue({
+      isValid: false,
+      invalidReason: "invalid_exact_stellar_payload_simulation_failed",
+      payer: "G-PAYER",
+    });
+    relayer.sendTransaction.mockClear();
+    relayer.getTransaction.mockClear();
+
+    const replay = await settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+
+    expect(relayer.sendTransaction).not.toHaveBeenCalled();
+    expect(relayer.getTransaction).not.toHaveBeenCalled();
+    expect(replay.success).toBe(false);
+    expect(replay.errorReason).toBe(
+      "invalid_exact_stellar_payload_simulation_failed",
+    );
+  });
+
+  test("gives concurrent settles of the same payment separate keys", async () => {
+    const relayer = makeRelayer();
+
+    await Promise.all([
+      settle(makeParams() as any, makeApi(relayer), baseNetworkConfig),
+      settle(makeParams() as any, makeApi(relayer), baseNetworkConfig),
+    ]);
+
+    const [[, first], [, second]] = relayer.sendTransaction.mock.calls;
+    expect(first.idempotencyKey).not.toBe(second.idempotencyKey);
+  });
+
+  test.each([
+    [
+      "timed out",
+      new Error("Socket request 'sendTransaction' timed out after 30000ms"),
+    ],
+    [
+      "closed",
+      Object.assign(
+        new Error("Socket closed by server (connection lifetime exceeded)"),
+        { code: "ESOCKETCLOSED" },
+      ),
+    ],
+    ["closed by pool executor", new Error("Socket closed by server")],
+  ])(
+    "resends with the same key when the Relayer reply is lost (%s)",
+    async (_name, socketError) => {
+      vi.useFakeTimers();
+      const relayer = makeRelayer();
+      relayer.sendTransaction.mockRejectedValueOnce(socketError);
+
+      const promise = settle(
+        makeParams() as any,
+        makeApi(relayer),
+        baseNetworkConfig,
+      );
+      await vi.advanceTimersByTimeAsync(500);
+      const result = await promise;
+
+      expect(relayer.sendTransaction).toHaveBeenCalledTimes(2);
+      const [[firstPayload, firstOptions], [secondPayload, secondOptions]] =
+        relayer.sendTransaction.mock.calls;
+      expect(secondPayload).toEqual(firstPayload);
+      expect(secondOptions.idempotencyKey).toBe(firstOptions.idempotencyKey);
+      expect(result.success).toBe(true);
+      expect(result.transaction).toBe("HASH_RELAYER");
+    },
+  );
+
+  test("returns by the deadline when a send never answers", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    relayer.sendTransaction.mockImplementation(() => new Promise(() => {}));
+
+    let settled = false;
+    const promise = settle(
+      makeParams({ maxTimeoutSeconds: 2 }) as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    ).finally(() => {
+      settled = true;
+    });
+    // 2s timeout leaves a 1s deadline
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(settled).toBe(true);
+    const result = await promise;
+    expect(relayer.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    // The send may have arrived, so the transaction may still land
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+  });
+
+  test("does not resend after a lost reply once the deadline is near", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    // The reply is lost just before the 1s deadline
+    relayer.sendTransaction.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) =>
+          setTimeout(() => reject(new Error("Socket closed by server")), 800),
+        ),
+    );
+
+    const promise = settle(
+      makeParams({ maxTimeoutSeconds: 2 }) as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await promise;
+
+    expect(relayer.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+  });
+
+  // The pool executor (the default) rejects with the Relayer's error string
+  test.each([
+    ["string", IN_PROGRESS_ERROR],
+    ["Error", new Error(IN_PROGRESS_ERROR)],
+  ])(
+    "retries with the same key while another settle is in progress (%s)",
+    async (_name, inProgressError) => {
+      vi.useFakeTimers();
+      const relayer = makeRelayer();
+      relayer.sendTransaction
+        .mockRejectedValueOnce(inProgressError)
+        .mockResolvedValueOnce({ id: "tx-new" });
+
+      const promise = settle(
+        makeParams() as any,
+        makeApi(relayer),
+        baseNetworkConfig,
+      );
+      await vi.advanceTimersByTimeAsync(500);
+      const result = await promise;
+
+      expect(relayer.sendTransaction).toHaveBeenCalledTimes(2);
+      const [[, first], [, second]] = relayer.sendTransaction.mock.calls;
+      expect(second.idempotencyKey).toBe(first.idempotencyKey);
+      expect(result.success).toBe(true);
+      expect(result.transaction).toBe("HASH_RELAYER");
+    },
+  );
+
+  test("stops retrying an in-progress settle after the retry limit", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    relayer.sendTransaction.mockRejectedValue(IN_PROGRESS_ERROR);
+
+    const promise = settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+    await vi.advanceTimersByTimeAsync(28_000);
+    const result = await promise;
+
+    // 1 initial + 3 retries, well before the deadline
+    expect(relayer.sendTransaction).toHaveBeenCalledTimes(4);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+  });
+
+  test("stops retrying an in-progress settle when the time budget runs out", async () => {
+    const relayer = makeRelayer();
+    relayer.sendTransaction.mockRejectedValue(new Error(IN_PROGRESS_ERROR));
+
+    const result = await settle(
+      // 1s timeout leaves 500ms of budget, not enough for a 500ms backoff
+      makeParams({ maxTimeoutSeconds: 1 }) as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+
+    expect(relayer.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+  });
+
+  test("keeps a send not final when a resend after a lost reply is rejected", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    relayer.sendTransaction
+      .mockRejectedValueOnce(new Error("Socket closed by server"))
+      .mockRejectedValueOnce(new Error("Relayer error: service unavailable"));
+
+    const promise = settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await promise;
+
+    expect(relayer.sendTransaction).toHaveBeenCalledTimes(2);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+  });
+
+  test("does not retry other Relayer errors", async () => {
+    const relayer = makeRelayer();
+    relayer.sendTransaction.mockRejectedValue(
+      new Error(
+        "Relayer error: Idempotency-Key reused with a different request payload",
+      ),
+    );
+
+    const result = await settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+
+    expect(relayer.sendTransaction).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe("unexpected_settle_error");
+  });
+});
+
+describe("relayer status polling", () => {
+  const makeParams = (overrides: Record<string, unknown> = {}) => ({
+    paymentPayload: buildPaymentPayloadV2(buildInvokeTxBase64()),
+    paymentRequirements: buildPaymentRequirementsV2(overrides),
+  });
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(verifyModule, "verify").mockResolvedValue({
+      isValid: true,
+      payer: "G-PAYER",
+    });
+    vi.spyOn(utils, "scValToJsonArg").mockImplementation(() => ({
+      address: "MOCK_ADDRESS",
+    }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  test("keeps polling when a status request fails", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    relayer.getTransaction
+      .mockRejectedValueOnce(new Error("Socket closed"))
+      .mockResolvedValueOnce({ status: "confirmed", hash: "HASH_RELAYER" });
+
+    const promise = settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    const result = await promise;
+
+    expect(relayer.getTransaction).toHaveBeenCalledTimes(2);
+    expect(result.success).toBe(true);
+    expect(result.transaction).toBe("HASH_RELAYER");
+  });
+
+  test("returns by the deadline when a status request hangs", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    relayer.getTransaction.mockImplementation(() => new Promise(() => {}));
+
+    let settled = false;
+    const promise = settle(
+      makeParams({ maxTimeoutSeconds: 2 }) as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    ).finally(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(settled).toBe(true);
+    const result = await promise;
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+  });
+
+  test("keeps polling past mined until confirmed", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    relayer.getTransaction
+      .mockResolvedValueOnce({ status: "mined", hash: "HASH_RELAYER" })
+      .mockResolvedValueOnce({ status: "confirmed", hash: "HASH_RELAYER" });
+
+    const promise = settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    const result = await promise;
+
+    expect(relayer.getTransaction).toHaveBeenCalledTimes(2);
+    expect(result.success).toBe(true);
+    expect(result.transaction).toBe("HASH_RELAYER");
+  });
+
+  test("reports a transaction not final at the deadline as not final", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    relayer.getTransaction.mockResolvedValue({
+      status: "submitted",
+      hash: "HASH_PENDING",
+    });
+
+    const promise = settle(
+      makeParams({ maxTimeoutSeconds: 2 }) as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    const result = await promise;
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+    expect(result.transaction).toBe("HASH_PENDING");
+  });
+
+  test("does not report a confirmed status without a hash as settled", async () => {
+    const relayer = makeRelayer();
+    relayer.getTransaction.mockResolvedValue({ status: "confirmed" });
+
+    const result = await settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+  });
+
+  test("reports a final failed status as failed", async () => {
+    const relayer = makeRelayer();
+    relayer.getTransaction.mockResolvedValue({
+      status: "failed",
+      hash: "HASH_FAILED",
+    });
+
+    const result = await settle(
+      makeParams() as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe("settle_exact_stellar_transaction_failed");
+    expect(result.transaction).toBe("HASH_FAILED");
+  });
+});
+
 describe("channel service under rate limiting", () => {
   const channelConfig = {
     ...baseNetworkConfig,
@@ -615,6 +1070,31 @@ describe("channel service under rate limiting", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  test("uses a key unique to each settle call", async () => {
+    vi.spyOn(utils, "scValToJsonArg").mockImplementation(() => ({
+      address: "MOCK_ADDRESS",
+    }));
+    const relayer = makeRelayer();
+    await settle(makeParams() as any, makeApi(relayer), baseNetworkConfig);
+    const [, relayerOptions] = relayer.sendTransaction.mock.calls[0];
+
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(submitted)
+      .mockResolvedValueOnce(confirmed);
+    await settle(makeParams() as any, makeApi(), channelConfig);
+
+    const channelsKey: string = (fetchMock.mock.calls[0][1] as any).headers[
+      "Idempotency-Key"
+    ];
+    // Same payment, so the same payment hash; a different settle call
+    const [, paymentHash, attempt] = channelsKey.split(":");
+    const [, relayerHash, relayerAttempt] =
+      relayerOptions.idempotencyKey.split(":");
+    expect(paymentHash).toBe(relayerHash);
+    expect(attempt).not.toBe(relayerAttempt);
   });
 
   test("lets a slow submit run until the settlement deadline", async () => {
@@ -736,7 +1216,10 @@ describe("channel service under rate limiting", () => {
 
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(result.success).toBe(false);
-      expect(result.errorReason).toBe("settle_channel_service_failed");
+      // Accepted, so a failed status request leaves the outcome unknown
+      expect(result.errorReason).toBe(
+        "settle_exact_stellar_transaction_not_final",
+      );
     },
   );
 
@@ -850,8 +1333,259 @@ describe("channel service under rate limiting", () => {
     const result = await promise;
 
     expect(result.success).toBe(false);
-    expect(result.errorReason).toBe("settle_channel_service_failed");
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
     expect(result.transaction).toBe("HASH_SENT");
+  });
+
+  const channelError = (status: number, code: string) =>
+    ({
+      ok: false,
+      status,
+      headers: new Headers(),
+      text: async () =>
+        JSON.stringify({ success: false, data: { code, error: code } }),
+    }) as any;
+
+  test.each([
+    [503, "IDEMPOTENCY_KEY_SEND_FAILED"],
+    [409, "IDEMPOTENCY_KEY_IN_PROGRESS"],
+  ])(
+    "resends a %i %s submit with the same key until it is accepted",
+    async (status, code) => {
+      vi.useFakeTimers();
+      const fetchMock = vi.spyOn(globalThis, "fetch");
+      // More failures than MAX_SUBMIT_RETRIES: these retry until the deadline
+      for (let i = 0; i < 5; i++) {
+        fetchMock.mockResolvedValueOnce(channelError(status, code));
+      }
+      fetchMock
+        .mockResolvedValueOnce(submitted)
+        .mockResolvedValueOnce(confirmed);
+
+      const promise = settle(makeParams() as any, makeApi(), channelConfig);
+      await vi.advanceTimersByTimeAsync(28_000);
+      const result = await promise;
+
+      expect(fetchMock).toHaveBeenCalledTimes(7);
+      const keys = fetchMock.mock.calls
+        .slice(0, 6)
+        .map(
+          ([, init]) =>
+            (init?.headers as Record<string, string>)["Idempotency-Key"],
+        );
+      expect(new Set(keys).size).toBe(1);
+      expect(result.success).toBe(true);
+      expect(result.transaction).toBe("HASH_CHANNEL");
+    },
+  );
+
+  test("reports a submit still unknown at the deadline as not final", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      channelError(503, "IDEMPOTENCY_KEY_SEND_FAILED"),
+    );
+
+    const promise = settle(makeParams() as any, makeApi(), channelConfig);
+    await vi.advanceTimersByTimeAsync(28_000);
+    const result = await promise;
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+  });
+
+  test.each([
+    ["a 429 with a retry-after past the deadline", () => rateLimited("60")],
+    ["a 500", () => channelError(500, "INTERNAL_ERROR")],
+  ])(
+    "keeps a submit not final when a resend after SEND_FAILED gets %s",
+    async (_name, laterFailure) => {
+      vi.useFakeTimers();
+      vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(channelError(503, "IDEMPOTENCY_KEY_SEND_FAILED"))
+        .mockResolvedValueOnce(laterFailure());
+
+      const promise = settle(makeParams() as any, makeApi(), channelConfig);
+      await vi.advanceTimersByTimeAsync(28_000);
+      const result = await promise;
+
+      expect(result.success).toBe(false);
+      expect(result.errorReason).toBe(
+        "settle_exact_stellar_transaction_not_final",
+      );
+    },
+  );
+
+  test("returns the submit hash when polling never reports one", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        okResponse({
+          transactionId: "TX_ID_1",
+          status: "submitted",
+          hash: "HASH_SUBMIT",
+        }),
+      )
+      .mockRejectedValue(new TypeError("fetch failed"));
+
+    const promise = settle(
+      makeParams({ maxTimeoutSeconds: 10 }) as any,
+      makeApi(),
+      channelConfig,
+    );
+    await vi.advanceTimersByTimeAsync(10_000);
+    const result = await promise;
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+    expect(result.transaction).toBe("HASH_SUBMIT");
+  });
+
+  test("returns the submit hash when a status request fails permanently", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        okResponse({
+          transactionId: "TX_ID_1",
+          status: "submitted",
+          hash: "HASH_SUBMIT",
+        }),
+      )
+      .mockResolvedValueOnce(channelError(404, "NOT_FOUND"));
+
+    const result = await settle(makeParams() as any, makeApi(), channelConfig);
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+    expect(result.transaction).toBe("HASH_SUBMIT");
+  });
+
+  test("returns the last polled hash when a later status request fails permanently", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(submitted)
+      .mockResolvedValueOnce(
+        okResponse({
+          transactionId: "TX_ID_1",
+          status: "submitted",
+          hash: "HASH_POLLED",
+        }),
+      )
+      .mockResolvedValue(channelError(401, "UNAUTHORIZED"));
+
+    const promise = settle(makeParams() as any, makeApi(), channelConfig);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const result = await promise;
+
+    // Polling stops at the permanent error
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+    expect(result.transaction).toBe("HASH_POLLED");
+  });
+
+  test("does not report a polled confirmed status without a hash as settled", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(submitted)
+      .mockResolvedValueOnce(
+        okResponse({
+          transactionId: "TX_ID_1",
+          status: "confirmed",
+          hash: null,
+        }),
+      );
+
+    const result = await settle(makeParams() as any, makeApi(), channelConfig);
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+  });
+
+  test("does not resend a submit whose outcome the channel service cannot report", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(channelError(422, "IDEMPOTENCY_KEY_OUTCOME_UNKNOWN"));
+
+    const result = await settle(makeParams() as any, makeApi(), channelConfig);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+  });
+
+  test("reports a submit cut off by the deadline as not final", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      (_url, init) =>
+        new Promise((_resolve, reject) => {
+          // Accepted, but the reply never arrives before the deadline
+          init?.signal?.addEventListener("abort", () =>
+            reject(init.signal!.reason),
+          );
+        }),
+    );
+
+    const promise = settle(makeParams() as any, makeApi(), channelConfig);
+    await vi.advanceTimersByTimeAsync(28_000);
+    const result = await promise;
+
+    expect(result.success).toBe(false);
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+  });
+
+  test("polls a submit response that has a hash but is not confirmed", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        okResponse({
+          transactionId: "TX_ID_1",
+          status: "submitted",
+          hash: "HASH_CHANNEL",
+        }),
+      )
+      .mockResolvedValueOnce(
+        okResponse({
+          transactionId: "TX_ID_1",
+          status: "failed",
+          hash: "HASH_CHANNEL",
+        }),
+      );
+
+    const promise = settle(makeParams() as any, makeApi(), channelConfig);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const result = await promise;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.success).toBe(false);
+    expect(result.transaction).toBe("HASH_CHANNEL");
+  });
+
+  test("accepts a submit response that is already confirmed", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(confirmed);
+
+    const result = await settle(makeParams() as any, makeApi(), channelConfig);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.success).toBe(true);
+    expect(result.transaction).toBe("HASH_CHANNEL");
   });
 
   test("returns within the deadline when a status request hangs", async () => {

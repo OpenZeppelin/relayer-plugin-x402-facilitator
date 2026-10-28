@@ -52,7 +52,8 @@ export function buildInvokeTxBase64(options: TxBuildOptions = {}): string {
   const func = {
     type: "hostFunctionTypeInvokeContract",
     invokeContract: invokeContractData,
-    toXdr: () => "FUNCXDR",
+    // Encodes the invocation so a changed transfer changes the XDR
+    toXdr: () => JSON.stringify(invokeContractData),
   };
 
   const operation = {
