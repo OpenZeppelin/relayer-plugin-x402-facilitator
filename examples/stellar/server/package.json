@@ -11,7 +11,7 @@
     "@x402/express": "^2.29.0",
     "@x402/stellar": "^2.29.0",
     "dotenv": "^16.5.0",
-    "express": "^4.21.2"
+    "express": "^4.22.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.1",
