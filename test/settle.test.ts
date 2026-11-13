@@ -1004,6 +1004,49 @@ describe("relayer status polling", () => {
     );
   });
 
+  test("caps the deadline at the configured maximum", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    relayer.getTransaction.mockResolvedValue({ status: "pending" });
+
+    let settled = false;
+    const promise = settle(
+      makeParams({ maxTimeoutSeconds: 300 }) as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+      { maxSettleTimeoutSeconds: 10 },
+    ).finally(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(settled).toBe(true);
+    const result = await promise;
+    expect(result.errorReason).toBe(
+      "settle_exact_stellar_transaction_not_final",
+    );
+  });
+
+  test("keeps a requested timeout that is below the maximum", async () => {
+    vi.useFakeTimers();
+    const relayer = makeRelayer();
+    relayer.getTransaction.mockResolvedValue({ status: "pending" });
+
+    let settled = false;
+    const promise = settle(
+      makeParams({ maxTimeoutSeconds: 2 }) as any,
+      makeApi(relayer),
+      baseNetworkConfig,
+      { maxSettleTimeoutSeconds: 10 },
+    ).finally(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(settled).toBe(true);
+    await promise;
+  });
+
   test("keeps polling past mined until confirmed", async () => {
     vi.useFakeTimers();
     const relayer = makeRelayer();

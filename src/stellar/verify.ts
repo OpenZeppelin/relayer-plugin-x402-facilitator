@@ -47,6 +47,15 @@ import {
 
 import type { PluginAPI } from "@openzeppelin/relayer-sdk";
 
+/**
+ * Matches the host error the Soroban host raises when an address auth entry's
+ * nonce is already on the ledger ("nonce already exists for address"). In an
+ * enforcing simulation, which is what a signed payment gets, nothing else
+ * produces it. Only the first line is checked: the event log that follows can
+ * carry strings a contract chose.
+ */
+const NONCE_REUSED_HOST_ERROR = /^[^\n]*Error\(Auth, ExistingValue\)/;
+
 type ErrorReason =
   | "invalid_x402_version"
   | "invalid_scheme"
@@ -59,6 +68,7 @@ type ErrorReason =
   | "invalid_exact_stellar_payload_wrong_recipient"
   | "invalid_exact_stellar_payload_wrong_amount"
   | "invalid_exact_stellar_payload_simulation_failed"
+  | "invalid_exact_stellar_payload_nonce_reused"
   | "invalid_exact_stellar_payload_unsafe_tx_or_op_source"
   | "invalid_exact_stellar_payload_unsafe_from_address"
   | "invalid_exact_stellar_payload_facilitator_in_auth"
@@ -407,6 +417,16 @@ export async function verify(
       simulateRpcResponse.result as rpc.Api.SimulateTransactionResponse;
     if (rpc.Api.isSimulationError(simulateResponse)) {
       console.error("Simulation error:", simulateResponse.error);
+      // The signed auth entry's one-time nonce is spent. Usually a replay of
+      // a settled payment, but not proof of one: the nonce is keyed by
+      // address, so the payer can spend it in any other transaction
+      if (NONCE_REUSED_HOST_ERROR.test(simulateResponse.error)) {
+        return invalidResponse(
+          "invalid_exact_stellar_payload_nonce_reused",
+          fromAddress,
+          "The nonce of the payment authorization was already used on chain",
+        );
+      }
       return invalidResponse(
         "invalid_exact_stellar_payload_simulation_failed",
         fromAddress,

@@ -1272,6 +1272,35 @@ describe("stellar verify invalidMessage", () => {
     );
   });
 
+  test("reports a reused nonce with its own reason", async () => {
+    const result = await run({
+      error:
+        "HostError: Error(Auth, ExistingValue)\n\nEvent log (newest first):\n" +
+        '   0: [Diagnostic Event] topics:[error, Error(Auth, ExistingValue)], data:["nonce already exists for address", G-PAYER]',
+    });
+
+    expect(result.isValid).toBe(false);
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_nonce_reused",
+    );
+    expect(result.invalidMessage).toBe(
+      "The nonce of the payment authorization was already used on chain",
+    );
+    expect(result.payer).toBe("G-PAYER");
+  });
+
+  test("ignores the nonce error text when it only appears in the event log", async () => {
+    const result = await run({
+      error:
+        "HostError: Error(Contract, #10)\n\nEvent log (newest first):\n" +
+        '   0: [Diagnostic Event] contract:C-TOKEN, topics:[log], data:"Error(Auth, ExistingValue)"',
+    });
+
+    expect(result.invalidReason).toBe(
+      "invalid_exact_stellar_payload_simulation_failed",
+    );
+  });
+
   test("truncates a long simulation error", async () => {
     const result = await run({ error: "x".repeat(5_000) });
 

@@ -90,8 +90,9 @@ Add a Stellar relayer, its signer, and the plugin entry to your Relayer `config.
       "raw_response": true,
       "forward_logs": true,
       "allow_get_invocation": true,
-      "timeout": 30,
+      "timeout": 25,
       "config": {
+        "max_settle_timeout_seconds": 20,
         "networks": [
           {
             "network": "stellar:testnet",
@@ -112,6 +113,7 @@ Notes on the plugin entry:
 
 - `allow_get_invocation` must be `true`. The x402 resource server packages (`@x402/core` and everything built on it) call `GET /supported` on startup, and without this flag the call is rejected and the resource server cannot initialize.
 - `raw_response` must be `true` so the plugin's response is returned as-is, in the shape x402 clients expect.
+- `timeout` and `max_settle_timeout_seconds` belong together: settle must answer before the Relayer cuts the call off. See [Settle timeout](#settle-timeout).
 - The plugin `id` becomes part of the URL: with `"id": "x402"`, the facilitator URL is `http://<relayer-host>/api/v1/plugins/x402/call`.
 
 For signer types other than a local keystore (AWS KMS, GCP KMS, Turnkey, and others) and for creating keys and API keys, see the [Relayer documentation](https://docs.openzeppelin.com/relayer).
@@ -127,6 +129,15 @@ curl -H "Authorization: Bearer <RELAYER_API_KEY>" \
 # testnet only
 curl "https://friendbot.stellar.org?addr=<RELAYER_ADDRESS>"
 ```
+
+### Plugin config reference
+
+Fields at the top level of `config`:
+
+| Field                        | Required | Description                                                                                                                                                                                                                                            |
+| ---------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `networks`                   | Yes      | One object per supported network. See [Network config reference](#network-config-reference)                                                                                                                                                            |
+| `max_settle_timeout_seconds` | No       | Upper bound, in seconds, on how long `/settle` waits for a settlement, whatever `maxTimeoutSeconds` the request carries. A positive number. When unset, no bound is applied; an invalid value fails every route. See [Settle timeout](#settle-timeout) |
 
 ### Network config reference
 
@@ -149,6 +160,32 @@ Each object in `config.networks`:
 `maxTransactionFeeStroops` bounds the cost the payer's transaction can impose: its simulated resource fee plus the 100 stroop base inclusion fee. This matches the fee the Relayer pays when it submits the settlement directly.
 
 With the [Channels service](#using-with-stellar-channels-service), the fund relayer's fee bump bids a higher inclusion fee on top of the resource fee (by default `resourceFee + 203`, and more with dynamic fees under surge pricing), so the fee actually paid can exceed the ceiling by that inclusion fee. The client cannot influence this part. Leave headroom for it, and use the Channels per-API-key fee limit to bound total spend. The upstream x402 Stellar facilitator has the same property when it wraps settlements in a fee bump.
+
+### Settle timeout
+
+`/settle` waits for the settlement until a deadline taken from the request's `maxTimeoutSeconds` (60 seconds when absent), and answers 2 seconds before it. That value is chosen by the resource server and can be several minutes. Several layers can cut the call off earlier:
+
+- the plugin `timeout` in the Relayer config (the Relayer answers `504` with code `TIMEOUT`),
+- the Relayer's `REQUEST_TIMEOUT_SECONDS` environment variable, 30 seconds by default (`504 Request handler timeout`),
+- any gateway or load balancer in front of the Relayer,
+- the resource server's own HTTP client timeout.
+
+When one of them fires first, the resource server gets a timeout and no settle response, and typically refuses the resource, while the transaction was already submitted and can still land. The payer is then charged for nothing.
+
+Set `max_settle_timeout_seconds` below all of them, so that a submitted settlement is always answered:
+
+```
+max_settle_timeout_seconds  <  plugin timeout  <=  REQUEST_TIMEOUT_SECONDS - 5  <  gateway timeout
+```
+
+The Relayer needs `REQUEST_TIMEOUT_SECONDS` to be at least 5 seconds above the plugin `timeout`. The values in the example above (20 and 25) fit a Relayer with default settings. To allow longer settlements, raise all of them together, for example `max_settle_timeout_seconds: 50`, `timeout: 55`, `REQUEST_TIMEOUT_SECONDS=60`, and a gateway timeout above 60 seconds.
+
+Things to know:
+
+- A settlement that is still pending at the deadline is answered with `errorReason: "settle_exact_stellar_transaction_not_final"` and the transaction hash when one is known, so it can be reconciled. A cap that is too low turns settlements that would have confirmed into this answer, so leave room for a few ledgers (a ledger closes in about 5 seconds).
+- The cap bounds the submission and the wait for its result. The checks that run before anything is submitted (the Relayer lookup and the verify simulation) are not cut short by it, so a slow RPC can still run past the cap. Nothing has been submitted at that point.
+- The cap does not change how `maxTimeoutSeconds` bounds the expiration of the payer's signature.
+- When unset, no cap is applied. A value that is not a positive number makes every route fail with `500` and code `INVALID_CONFIG`.
 
 ### Exposed routes
 
