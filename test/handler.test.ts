@@ -122,6 +122,76 @@ describe("handler routing", () => {
     expect((result as any).success).toBe(true);
   });
 
+  test("/settle passes max_settle_timeout_seconds to stellar settle", async () => {
+    const settleSpy = vi.spyOn(stellarSettle, "settle").mockResolvedValue({
+      success: true,
+      transaction: "TX",
+      network: "stellar:testnet",
+    });
+    const params = createValidParams("stellar:testnet");
+    const api = {} as any;
+
+    await handler({
+      route: "/settle",
+      params,
+      api,
+      config: { ...networkConfig, max_settle_timeout_seconds: 25 },
+      kv: {} as any,
+      headers: {},
+      method: "POST",
+      query: {},
+    } as any);
+
+    expect(settleSpy).toHaveBeenCalledWith(
+      params,
+      api,
+      networkConfig.networks[0],
+      { maxSettleTimeoutSeconds: 25 },
+    );
+  });
+
+  test.each([0, -5, "25", Number.NaN, Number.POSITIVE_INFINITY, null])(
+    "rejects max_settle_timeout_seconds %s",
+    async (value) => {
+      const settleSpy = vi
+        .spyOn(stellarSettle, "settle")
+        .mockResolvedValue({ success: true, transaction: "TX", network: "" });
+      settleSpy.mockClear();
+
+      await expect(
+        handler({
+          route: "/settle",
+          params: createValidParams("stellar:testnet"),
+          api: {} as any,
+          config: { ...networkConfig, max_settle_timeout_seconds: value },
+          kv: {} as any,
+          headers: {},
+          method: "POST",
+          query: {},
+        } as any),
+      ).rejects.toThrow("max_settle_timeout_seconds");
+      expect(settleSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(["/", "/verify", "/supported"])(
+    "rejects an invalid max_settle_timeout_seconds on %s with a config error code",
+    async (route) => {
+      await expect(
+        handler({
+          route,
+          params: createValidParams("stellar:testnet"),
+          api: {} as any,
+          config: { ...networkConfig, max_settle_timeout_seconds: 0 },
+          kv: {} as any,
+          headers: {},
+          method: "POST",
+          query: {},
+        } as any),
+      ).rejects.toMatchObject({ code: "INVALID_CONFIG", status: 500 });
+    },
+  );
+
   test("/supported returns kinds array with signers and extensions", async () => {
     const api = createApiWithLedger(100, "G-RELAYER123");
     const result = await handler({

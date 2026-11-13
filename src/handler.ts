@@ -37,6 +37,7 @@ export async function handler(context: PluginContext) {
   }
 
   const x402PluginConfig = config as X402PluginConfig;
+  validateConfig(x402PluginConfig);
 
   // Route based on the route
   switch (route) {
@@ -60,6 +61,27 @@ export async function handler(context: PluginContext) {
       error.code = "NOT_FOUND";
       throw error;
     }
+  }
+}
+
+/**
+ * Rejects a settle timeout cap that is not a positive number, so a bad value
+ * fails every call instead of silently leaving settle uncapped. With
+ * `raw_response` the Relayer returns only the error's code and details, so
+ * the message is logged as well.
+ */
+function validateConfig(config: X402PluginConfig): void {
+  const max = config.max_settle_timeout_seconds;
+  if (max === undefined) return;
+  if (typeof max !== "number" || !Number.isFinite(max) || max <= 0) {
+    const error: PluginError = new Error(
+      "X402 plugin config: max_settle_timeout_seconds must be a positive number of seconds",
+    );
+    error.status = 500;
+    error.code = "INVALID_CONFIG";
+    error.details = { field: "max_settle_timeout_seconds" };
+    console.error(error.message);
+    throw error;
   }
 }
 
@@ -138,7 +160,9 @@ async function handleSettle(
 
   switch (networkConfig.type) {
     case "stellar":
-      return handleSettleStellar(params, api, networkConfig);
+      return handleSettleStellar(params, api, networkConfig, {
+        maxSettleTimeoutSeconds: config.max_settle_timeout_seconds,
+      });
     default:
       return {
         success: false,

@@ -1042,15 +1042,29 @@ function errorResponse(
   };
 }
 
+export interface SettleOptions {
+  /**
+   * Upper bound on the settlement wait in seconds. The request's
+   * maxTimeoutSeconds comes from the resource server and can exceed what the
+   * plugin runtime or a gateway allows; past that, the call is cut off with
+   * no settle response while the payment may still land.
+   */
+  maxSettleTimeoutSeconds?: number;
+}
+
 export async function settle(
   params: SettleRequest,
   api: PluginAPI,
   networkConfig: NetworkConfig,
+  options: SettleOptions = {},
 ): Promise<SettleResponse> {
   const { paymentPayload, paymentRequirements } = params;
   const startTime = Date.now();
   const timeoutMs =
-    (paymentRequirements.maxTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
+    Math.min(
+      paymentRequirements.maxTimeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS,
+      options.maxSettleTimeoutSeconds ?? Infinity,
+    ) * 1000;
   const bufferMs = Math.min(BUFFER_MS, timeoutMs / 2);
   const deadlineMs = startTime + timeoutMs - bufferMs;
 

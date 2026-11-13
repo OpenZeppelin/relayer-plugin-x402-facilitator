@@ -146,6 +146,12 @@ export type ConfigNetwork = "stellar" | "evm" | "solana";
 
 export type X402PluginConfig = {
   networks: NetworkConfig[];
+  /**
+   * Upper bound, in seconds, on how long settle waits for a settlement,
+   * whatever maxTimeoutSeconds the request carries. Set it below the plugin
+   * `timeout` so settle answers before the Relayer cuts the call off.
+   */
+  max_settle_timeout_seconds?: number;
 };
 
 export interface PluginContext {
